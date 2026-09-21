@@ -1,0 +1,565 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 110;
+	objects = {
+
+/* Begin PBXContainerItemProxy section */
+		FD4DD7D3305EA2B400083788 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = FD4DD7BD305EA2B300083788 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = FD4DD7C4305EA2B300083788;
+			remoteInfo = MyCast;
+		};
+		FD4DD7DD305EA2B400083788 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = FD4DD7BD305EA2B300083788 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = FD4DD7C4305EA2B300083788;
+			remoteInfo = MyCast;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		FD4DD7C5305EA2B300083788 /* MyCast.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MyCast.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		FD4DD7D2305EA2B400083788 /* MyCastTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MyCastTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		FD4DD7DC305EA2B400083788 /* MyCastUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MyCastUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		FD4DD800305EA59700083788 /* Exceptions for "MyCast" folder in "MyCast" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = FD4DD7C4305EA2B300083788 /* MyCast */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		FD4DD7C7305EA2B300083788 /* MyCast */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				FD4DD800305EA59700083788 /* Exceptions for "MyCast" folder in "MyCast" target */,
+			);
+			path = MyCast;
+			sourceTree = "<group>";
+		};
+		FD4DD7D5305EA2B400083788 /* MyCastTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = MyCastTests;
+			sourceTree = "<group>";
+		};
+		FD4DD7DF305EA2B400083788 /* MyCastUITests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = MyCastUITests;
+			sourceTree = "<group>";
+		};
+/* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		FD4DD7C2305EA2B300083788 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			files = (
+			);
+		};
+		FD4DD7CF305EA2B400083788 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			files = (
+			);
+		};
+		FD4DD7D9305EA2B400083788 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			files = (
+			);
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		FD4DD7BC305EA2B300083788 = {
+			isa = PBXGroup;
+			children = (
+				FD4DD7C7305EA2B300083788 /* MyCast */,
+				FD4DD7D5305EA2B400083788 /* MyCastTests */,
+				FD4DD7DF305EA2B400083788 /* MyCastUITests */,
+				FD4DD7C6305EA2B300083788 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		FD4DD7C6305EA2B300083788 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				FD4DD7C5305EA2B300083788 /* MyCast.app */,
+				FD4DD7D2305EA2B400083788 /* MyCastTests.xctest */,
+				FD4DD7DC305EA2B400083788 /* MyCastUITests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		FD4DD7C4305EA2B300083788 /* MyCast */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = FD4DD7E4305EA2B400083788 /* Build configuration list for PBXNativeTarget "MyCast" */;
+			buildPhases = (
+				FD4DD7C1305EA2B300083788 /* Sources */,
+				FD4DD7C2305EA2B300083788 /* Frameworks */,
+				FD4DD7C3305EA2B300083788 /* Resources */,
+			);
+			buildRules = (
+			);
+			fileSystemSynchronizedGroups = (
+				FD4DD7C7305EA2B300083788 /* MyCast */,
+			);
+			name = MyCast;
+			productName = MyCast;
+			productReference = FD4DD7C5305EA2B300083788 /* MyCast.app */;
+			productType = "com.apple.product-type.application";
+		};
+		FD4DD7D1305EA2B400083788 /* MyCastTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = FD4DD7E7305EA2B400083788 /* Build configuration list for PBXNativeTarget "MyCastTests" */;
+			buildPhases = (
+				FD4DD7CE305EA2B400083788 /* Sources */,
+				FD4DD7CF305EA2B400083788 /* Frameworks */,
+				FD4DD7D0305EA2B400083788 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				FD4DD7D4305EA2B400083788 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				FD4DD7D5305EA2B400083788 /* MyCastTests */,
+			);
+			name = MyCastTests;
+			productName = MyCastTests;
+			productReference = FD4DD7D2305EA2B400083788 /* MyCastTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		FD4DD7DB305EA2B400083788 /* MyCastUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = FD4DD7EA305EA2B400083788 /* Build configuration list for PBXNativeTarget "MyCastUITests" */;
+			buildPhases = (
+				FD4DD7D8305EA2B400083788 /* Sources */,
+				FD4DD7D9305EA2B400083788 /* Frameworks */,
+				FD4DD7DA305EA2B400083788 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				FD4DD7DE305EA2B400083788 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				FD4DD7DF305EA2B400083788 /* MyCastUITests */,
+			);
+			name = MyCastUITests;
+			productName = MyCastUITests;
+			productReference = FD4DD7DC305EA2B400083788 /* MyCastUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		FD4DD7BD305EA2B300083788 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2700;
+				LastUpgradeCheck = 2700;
+				TargetAttributes = {
+					FD4DD7C4305EA2B300083788 = {
+						CreatedOnToolsVersion = 27.0;
+					};
+					FD4DD7D1305EA2B400083788 = {
+						CreatedOnToolsVersion = 27.0;
+						TestTargetID = FD4DD7C4305EA2B300083788;
+					};
+					FD4DD7DB305EA2B400083788 = {
+						CreatedOnToolsVersion = 27.0;
+						TestTargetID = FD4DD7C4305EA2B300083788;
+					};
+				};
+			};
+			buildConfigurationList = FD4DD7C0305EA2B300083788 /* Build configuration list for PBXProject "MyCast" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = FD4DD7BC305EA2B300083788;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = FD4DD7C6305EA2B300083788 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				FD4DD7C4305EA2B300083788 /* MyCast */,
+				FD4DD7D1305EA2B400083788 /* MyCastTests */,
+				FD4DD7DB305EA2B400083788 /* MyCastUITests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		FD4DD7C3305EA2B300083788 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			files = (
+			);
+		};
+		FD4DD7D0305EA2B400083788 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			files = (
+			);
+		};
+		FD4DD7DA305EA2B400083788 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			files = (
+			);
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		FD4DD7C1305EA2B300083788 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			files = (
+			);
+		};
+		FD4DD7CE305EA2B400083788 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			files = (
+			);
+		};
+		FD4DD7D8305EA2B400083788 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			files = (
+			);
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		FD4DD7D4305EA2B400083788 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = FD4DD7C4305EA2B300083788 /* MyCast */;
+			targetProxy = FD4DD7D3305EA2B400083788 /* PBXContainerItemProxy */;
+		};
+		FD4DD7DE305EA2B400083788 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = FD4DD7C4305EA2B300083788 /* MyCast */;
+			targetProxy = FD4DD7DD305EA2B400083788 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		FD4DD7E2305EA2B400083788 /* Debug configuration for PBXProject "MyCast" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		FD4DD7E3305EA2B400083788 /* Release configuration for PBXProject "MyCast" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		FD4DD7E5305EA2B400083788 /* Debug configuration for PBXNativeTarget "MyCast" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = MyCast/Info.plist;
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "MyCast connects to your local weather forecast server to fetch the latest forecast data.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "MyCast uses your location to show current conditions on the map.";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = Rehabaam.MyCast;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		FD4DD7E6305EA2B400083788 /* Release configuration for PBXNativeTarget "MyCast" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = MyCast/Info.plist;
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "MyCast connects to your local weather forecast server to fetch the latest forecast data.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "MyCast uses your location to show current conditions on the map.";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = Rehabaam.MyCast;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		FD4DD7E8305EA2B400083788 /* Debug configuration for PBXNativeTarget "MyCastTests" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = Rehabaam.MyCastTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/MyCast.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/MyCast";
+			};
+			name = Debug;
+		};
+		FD4DD7E9305EA2B400083788 /* Release configuration for PBXNativeTarget "MyCastTests" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = Rehabaam.MyCastTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/MyCast.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/MyCast";
+			};
+			name = Release;
+		};
+		FD4DD7EB305EA2B400083788 /* Debug configuration for PBXNativeTarget "MyCastUITests" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = Rehabaam.MyCastUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = MyCast;
+			};
+			name = Debug;
+		};
+		FD4DD7EC305EA2B400083788 /* Release configuration for PBXNativeTarget "MyCastUITests" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = Rehabaam.MyCastUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = MyCast;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		FD4DD7C0305EA2B300083788 /* Build configuration list for PBXProject "MyCast" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				FD4DD7E2305EA2B400083788 /* Debug configuration for PBXProject "MyCast" */,
+				FD4DD7E3305EA2B400083788 /* Release configuration for PBXProject "MyCast" */,
+			);
+			defaultConfigurationName = Release;
+		};
+		FD4DD7E4305EA2B400083788 /* Build configuration list for PBXNativeTarget "MyCast" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				FD4DD7E5305EA2B400083788 /* Debug configuration for PBXNativeTarget "MyCast" */,
+				FD4DD7E6305EA2B400083788 /* Release configuration for PBXNativeTarget "MyCast" */,
+			);
+			defaultConfigurationName = Release;
+		};
+		FD4DD7E7305EA2B400083788 /* Build configuration list for PBXNativeTarget "MyCastTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				FD4DD7E8305EA2B400083788 /* Debug configuration for PBXNativeTarget "MyCastTests" */,
+				FD4DD7E9305EA2B400083788 /* Release configuration for PBXNativeTarget "MyCastTests" */,
+			);
+			defaultConfigurationName = Release;
+		};
+		FD4DD7EA305EA2B400083788 /* Build configuration list for PBXNativeTarget "MyCastUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				FD4DD7EB305EA2B400083788 /* Debug configuration for PBXNativeTarget "MyCastUITests" */,
+				FD4DD7EC305EA2B400083788 /* Release configuration for PBXNativeTarget "MyCastUITests" */,
+			);
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = FD4DD7BD305EA2B300083788 /* Project object */;
+	validationLevel = 1;
+}

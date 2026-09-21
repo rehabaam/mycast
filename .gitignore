@@ -1,0 +1,33 @@
+# Secrets — real Netatmo credentials and station IDs live here.
+# Never commit this; .env.example is the template contributors should copy.
+.env
+
+# OAuth token cache, if ever created inside the repo directory instead of
+# the default $HOME/.mycast/tokens.json.
+.mycast/
+tokens.json
+
+# Build artifacts
+/server/mycast
+*.exe
+*.test
+
+# Local, personal Claude Code tool-permission config — not project config.
+.claude/settings.local.json
+
+# Xcode / iOS app (app/)
+xcuserdata/
+*.xcuserstate
+*.xcscmblueprint
+*.xccheckout
+DerivedData/
+.swiftpm/
+*.moved-aside
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# OS/editor junk
+.DS_Store
+*.swp
