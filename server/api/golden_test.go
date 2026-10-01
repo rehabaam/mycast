@@ -45,7 +45,11 @@ func checkGolden(t *testing.T, name string, v any) {
 }
 
 func TestGoldenCurrent(t *testing.T) {
-	checkGolden(t, "current.json", newCurrentResponse(sampleCurrent()))
+	checkGolden(t, "current.json", newCurrentResponse(sampleCurrent(), false))
+}
+
+func TestGoldenCurrentStale(t *testing.T) {
+	checkGolden(t, "current_stale.json", newCurrentResponse(sampleCurrent(), true))
 }
 
 func TestGoldenCurrentOutdoorOffline(t *testing.T) {
@@ -53,5 +57,5 @@ func TestGoldenCurrentOutdoorOffline(t *testing.T) {
 	cur.OutdoorAvailable = false
 	cur.OutdoorTemp, cur.OutdoorHumidity = 0, 0
 	cur.Modules[0].Reachable = false
-	checkGolden(t, "current_outdoor_offline.json", newCurrentResponse(cur))
+	checkGolden(t, "current_outdoor_offline.json", newCurrentResponse(cur, false))
 }

@@ -27,8 +27,12 @@ func (f *fakeCurrent) Latest() (*netatmo.Current, bool) {
 	return f.cur, f.ok
 }
 
+// sampleFetchedAt is when the sample reading was "retrieved".
+var sampleFetchedAt = time.Date(2026, time.June, 9, 10, 14, 0, 0, time.UTC)
+
 func sampleCurrent() *netatmo.Current {
 	return &netatmo.Current{
+		FetchedAt:         sampleFetchedAt,
 		Timestamp:         1781000000,
 		OutdoorAvailable:  true,
 		OutdoorTemp:       16.6,
@@ -51,7 +55,9 @@ func newTestServer(t *testing.T, cur *fakeCurrent, obs ...netatmo.Observation) (
 	ts := store.NewTimeSeries(24 * 10)
 	ts.Append(obs...)
 	engine := forecast.NewEngine(ts, forecast.Config{StationID: "st", StaleAfter: time.Hour})
-	return NewServer("127.0.0.1:0", engine, cur, ts), ts
+	s := NewServer("127.0.0.1:0", time.Hour, engine, cur, ts)
+	s.now = func() time.Time { return sampleFetchedAt.Add(time.Minute) } // a minute after the fetch
+	return s, ts
 }
 
 func history(hours int) []netatmo.Observation {
@@ -105,6 +111,8 @@ func TestCurrentUsesSnakeCaseWithUnitsAndNeverCallsUpstreamPerRequest(t *testing
 
 	want := map[string]any{
 		"timestamp":            "2026-06-09T10:13:20Z",
+		"fetched_at":           "2026-06-09T10:14:00Z",
+		"stale":                false,
 		"outdoor_available":    true,
 		"outdoor_temp_c":       16.6,
 		"outdoor_humidity_pct": 84.0,
@@ -139,6 +147,34 @@ func TestCurrentUsesSnakeCaseWithUnitsAndNeverCallsUpstreamPerRequest(t *testing
 	do(t, s, http.MethodGet, "/current")
 	if src.calls != 2 {
 		t.Errorf("source consulted %d times for 2 requests", src.calls)
+	}
+}
+
+func TestCurrentIsFlaggedStaleWhenRefreshesStopSucceeding(t *testing.T) {
+	cases := []struct {
+		name string
+		age  time.Duration
+		want bool
+	}{
+		{"just fetched", time.Minute, false},
+		{"right at the threshold", time.Hour, false},
+		{"fetches failing for hours", 5 * time.Hour, true},
+	}
+	for _, c := range cases {
+		s, _ := newTestServer(t, &fakeCurrent{cur: sampleCurrent(), ok: true})
+		s.now = func() time.Time { return sampleFetchedAt.Add(c.age) }
+
+		rec := do(t, s, http.MethodGet, "/current")
+		if rec.Code != 200 {
+			t.Fatalf("%s: status = %d, want 200 (the last good reading is still served)", c.name, rec.Code)
+		}
+		m := decode(t, rec)
+		if m["stale"] != c.want {
+			t.Errorf("%s: stale = %v, want %v", c.name, m["stale"], c.want)
+		}
+		if m["fetched_at"] != "2026-06-09T10:14:00Z" {
+			t.Errorf("%s: fetched_at = %v", c.name, m["fetched_at"])
+		}
 	}
 }
 

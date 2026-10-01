@@ -1,6 +1,7 @@
 package store
 
 import (
+	"sort"
 	"sync"
 	"time"
 
@@ -24,22 +25,26 @@ func NewTimeSeries(maxHours int) *TimeSeries {
 	}
 }
 
-// floorToHour truncates a Unix timestamp to the start of its hour.
-func floorToHour(ts int64) int64 {
+// HourStart truncates a Unix timestamp to the start of its clock hour. It is
+// the bucketing rule the store applies to every observation.
+func HourStart(ts int64) int64 {
 	return ts - ts%3600
 }
 
-// Append adds one or more observations. Timestamps are floored to the hour,
-// so the buffer holds one slot per clock hour and its capacity really does
-// span maxHours of wall-clock time: a later observation in the same hour
-// replaces the earlier one (last write wins). Observations older than the
+// Append records a live reading from the station. Its timestamp is floored to
+// the hour, so the buffer holds one slot per clock hour and its capacity
+// really does span maxHours of wall-clock time: a later reading in the same
+// hour replaces the earlier one (last write wins). Readings older than the
 // newest stored hour are ignored.
+//
+// Only Append counts as the station having reported: it is what UpdatedAt
+// tracks.
 func (ts *TimeSeries) Append(obs ...netatmo.Observation) {
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
 
 	for _, o := range obs {
-		o.Timestamp = floorToHour(o.Timestamp)
+		o.Timestamp = HourStart(o.Timestamp)
 
 		n := len(ts.data)
 		switch {
@@ -52,7 +57,39 @@ func (ts *TimeSeries) Append(obs ...netatmo.Observation) {
 		}
 		ts.updatedAt = time.Now()
 	}
+	ts.trim()
+}
 
+// Backfill merges authoritative hourly history, such as Netatmo's own
+// per-hour aggregates. Each observation replaces the bucket for its hour or
+// is inserted in order, so it can correct hours already stored (for example
+// the provisional values of a live reading) as well as extend the past.
+//
+// Backfill deliberately does not touch UpdatedAt: replaying old data at
+// startup, or refreshing recent hours, says nothing about whether the station
+// is currently reporting.
+func (ts *TimeSeries) Backfill(obs ...netatmo.Observation) {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+
+	for _, o := range obs {
+		o.Timestamp = HourStart(o.Timestamp)
+
+		i := sort.Search(len(ts.data), func(i int) bool { return ts.data[i].Timestamp >= o.Timestamp })
+		switch {
+		case i < len(ts.data) && ts.data[i].Timestamp == o.Timestamp:
+			ts.data[i] = o
+		default:
+			ts.data = append(ts.data, netatmo.Observation{})
+			copy(ts.data[i+1:], ts.data[i:])
+			ts.data[i] = o
+		}
+	}
+	ts.trim()
+}
+
+// trim drops the oldest observations beyond capacity. The caller holds mu.
+func (ts *TimeSeries) trim() {
 	if len(ts.data) > ts.capacity {
 		ts.data = ts.data[len(ts.data)-ts.capacity:]
 	}
@@ -75,9 +112,10 @@ func (ts *TimeSeries) Len() int {
 	return len(ts.data)
 }
 
-// UpdatedAt reports the wall-clock time of the last accepted Append, or the
-// zero time if nothing has ever been stored. It tells a consumer how long it
-// has been since the station last delivered data.
+// UpdatedAt reports the wall-clock time of the last accepted live reading
+// (Append), or the zero time if the station has never reported. It tells a
+// consumer how long it has been since the station last delivered data;
+// history added with Backfill does not count.
 func (ts *TimeSeries) UpdatedAt() time.Time {
 	ts.mu.RLock()
 	defer ts.mu.RUnlock()

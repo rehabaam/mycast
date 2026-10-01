@@ -25,7 +25,11 @@ func (s *Server) handleCurrent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "no station reading available yet")
 		return
 	}
-	writeJSON(w, http.StatusOK, newCurrentResponse(cur))
+
+	// The reading is cached, so a run of failed fetches would otherwise keep
+	// serving the last good one as if it were current. Say so instead.
+	stale := s.now().Sub(cur.FetchedAt) > s.staleAfter
+	writeJSON(w, http.StatusOK, newCurrentResponse(cur, stale))
 }
 
 func (s *Server) handleForecast(w http.ResponseWriter, r *http.Request) {

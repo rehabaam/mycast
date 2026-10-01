@@ -135,6 +135,7 @@ func (c *Client) GetCurrent() (*Current, error) {
 
 	dev := resp.Body.Devices[0]
 	cur := &Current{
+		FetchedAt:      time.Now(),
 		Timestamp:      dev.DashboardData.TimeUTC,
 		IndoorTemp:     dev.DashboardData.Temperature,
 		IndoorHumidity: dev.DashboardData.Humidity,

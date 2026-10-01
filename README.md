@@ -158,7 +158,9 @@ The station's latest reading, as of the last scheduled fetch (every `FETCH_INTER
 
 ```jsonc
 {
-  "timestamp": "2026-04-26T16:33:21Z",
+  "timestamp": "2026-04-26T16:33:21Z",   // when the station measured it
+  "fetched_at": "2026-04-26T16:33:40Z",  // when this service last retrieved it
+  "stale": false,
   "outdoor_available": true,
   "outdoor_temp_c": 8.3,
   "outdoor_humidity_pct": 34,
@@ -186,6 +188,8 @@ The station's latest reading, as of the last scheduled fetch (every `FETCH_INTER
 }
 ```
 
+> `stale` is `true` when `fetched_at` is more than 2×`FETCH_INTERVAL_MIN` old: the server keeps answering with its last good reading while fetches from Netatmo are failing, so a client must check this flag (the bundled app shows a warning) rather than treat every `200` as live.
+>
 > `outdoor_available` is `false` when the outdoor module is missing or unreachable; `outdoor_*`, `apparent_temp_c` and the `today_outdoor_*` values are then zeros rather than readings. The service also refuses to record such a reading in its history, so a dead battery can't plant fake 0 °C points in the forecast.
 >
 > Before the first reading has been fetched, `/current` answers `503`.

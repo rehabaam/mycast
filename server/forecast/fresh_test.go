@@ -82,6 +82,33 @@ func TestFreshFlagsASilentStationAsStale(t *testing.T) {
 	}
 }
 
+// The reported scenario: the process starts while the outdoor module is
+// offline, so only the history backfill happens. That old data must not make
+// the station look like it is reporting.
+func TestFreshTreatsBackfilledHistoryAloneAsStale(t *testing.T) {
+	ts := store.NewTimeSeries(24 * 10)
+	now := time.Now()
+	for h := 72; h >= 1; h-- {
+		ts.Backfill(obsAtTime(now.Add(-time.Duration(h)*time.Hour), 13, 80, 5))
+	}
+	engine := NewEngine(ts, Config{StationID: "test-station", StaleAfter: time.Hour})
+
+	fresh := engine.Fresh()
+
+	if !fresh.Stale {
+		t.Error("Stale = false with only backfilled history and no live reading")
+	}
+	if len(fresh.Days) == 0 {
+		t.Error("Days is empty: the forecast should still be served, flagged stale")
+	}
+
+	// The first live reading clears it.
+	ts.Append(obsAtTime(now, 13, 80, 5))
+	if engine.Fresh().Stale {
+		t.Error("Stale = true after a live reading arrived")
+	}
+}
+
 func TestFreshWithNoDataIsStaleWithEmptyDays(t *testing.T) {
 	engine := NewEngine(store.NewTimeSeries(24), Config{StationID: "test-station", StaleAfter: time.Hour})
 

@@ -32,6 +32,11 @@ struct CurrentConditionsCard: View {
                 }
                 Spacer()
             }
+            if current.stale {
+                Label("Station data is out of date", systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.orange)
+            }
             if !current.outdoorAvailable {
                 Label("Outdoor sensor unavailable", systemImage: "exclamationmark.triangle.fill")
                     .font(.caption.weight(.semibold))

@@ -10,6 +10,11 @@ import Foundation
 struct CurrentWeather: Codable {
     let timestamp: Date
 
+    /// True when the server hasn't managed to refresh this reading recently
+    /// (its fetches from the station are failing), so what follows is the last
+    /// good reading rather than a current one.
+    let stale: Bool
+
     /// False when the station's outdoor module is missing or unreachable. The
     /// outdoor values below are then zeros, not readings.
     let outdoorAvailable: Bool
@@ -35,6 +40,7 @@ struct CurrentWeather: Codable {
     // Swift keeps its short property names; the server's keys carry units.
     enum CodingKeys: String, CodingKey {
         case timestamp
+        case stale
         case outdoorAvailable = "outdoor_available"
         case outdoorTemp = "outdoor_temp_c"
         case outdoorHumidity = "outdoor_humidity_pct"

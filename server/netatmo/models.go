@@ -1,5 +1,7 @@
 package netatmo
 
+import "time"
+
 // StationsDataResponse is returned by GET /api/getstationsdata.
 type StationsDataResponse struct {
 	Body   StationsBody `json:"body"`
@@ -77,7 +79,12 @@ type Observation struct {
 
 // Current holds the latest live readings from the station.
 type Current struct {
+	// Timestamp is when Netatmo says the station measured this reading.
 	Timestamp int64
+
+	// FetchedAt is when this service successfully retrieved it. A reading
+	// that keeps being served long after FetchedAt means fetches are failing.
+	FetchedAt time.Time
 
 	// OutdoorAvailable is false when the outdoor module is missing,
 	// unreachable, or reported no temperature/humidity. The outdoor fields
@@ -123,8 +130,13 @@ type ModuleStatus struct {
 // Observation converts the live reading into a time-series Observation. ok is
 // false when the outdoor module has no usable reading, in which case the
 // returned Observation must not be stored: its zero temperature/humidity
-// would be indistinguishable from a real 0 °C / 0 % reading. Rain uses the
-// rolling one-hour sum so it matches the units of the hourly history.
+// would be indistinguishable from a real 0 °C / 0 % reading.
+//
+// Rain is left at zero on purpose. The station only reports a rolling
+// last-hour sum (SumRain1h), which at 10:05 covers 09:05-10:05; stored in the
+// 10:00 bucket it would overlap the 09:00 bucket's clock-hour total and count
+// that rain twice. The hour's real total comes from Netatmo's hourly history,
+// which the scheduler re-reads for completed hours.
 func (c *Current) Observation() (obs Observation, ok bool) {
 	if !c.OutdoorAvailable {
 		return Observation{}, false
@@ -137,6 +149,5 @@ func (c *Current) Observation() (obs Observation, ok bool) {
 		WindAngle:   c.WindAngle,
 		GustSpeed:   c.GustSpeed,
 		GustAngle:   c.GustAngle,
-		Rain:        c.SumRain1h,
 	}, true
 }

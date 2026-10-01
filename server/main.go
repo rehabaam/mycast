@@ -66,7 +66,9 @@ func main() {
 	if err != nil {
 		log.Printf("Warning: history load failed (%v) — forecast will use current reading only", err)
 	} else {
-		ts.Append(hist...)
+		// History is not a live report: it must not make the station look
+		// like it is currently reporting (see store.TimeSeries.UpdatedAt).
+		ts.Backfill(hist...)
 		log.Printf("Loaded %d hourly observations", len(hist))
 	}
 
@@ -122,7 +124,7 @@ func main() {
 
 	// --- HTTP API ---
 	addr := net.JoinHostPort(cfg.BindAddr, cfg.Port)
-	srv := api.NewServer(addr, engine, client, ts)
+	srv := api.NewServer(addr, staleAfter, engine, client, ts)
 	ln, err := srv.Listen()
 	if err != nil {
 		log.Fatalf("Cannot listen on %s: %v", addr, err)
@@ -181,13 +183,25 @@ func runScheduler(ctx context.Context, client *netatmo.Client, ts *store.TimeSer
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			fetchAndUpdate(client, ts, engine)
+			fetchAndUpdate(client, ts, engine, time.Now())
 		}
 	}
 }
 
-func fetchAndUpdate(client *netatmo.Client, ts *store.TimeSeries, engine *forecast.Engine) {
-	cur, err := client.GetCurrent()
+// stationSource is the part of *netatmo.Client the scheduler uses, so a tick
+// can be tested without the network.
+type stationSource interface {
+	GetCurrent() (*netatmo.Current, error)
+	GetHistory(from, to time.Time) ([]netatmo.Observation, error)
+}
+
+// reconcileWindow is how far back each tick re-reads Netatmo's hourly
+// history. It spans several hours so an hour that Netatmo hadn't aggregated
+// yet at one tick is picked up at a later one.
+const reconcileWindow = 3 * time.Hour
+
+func fetchAndUpdate(src stationSource, ts *store.TimeSeries, engine *forecast.Engine, now time.Time) {
+	cur, err := src.GetCurrent()
 	if err != nil {
 		log.Printf("Scheduler: fetch error: %v", err)
 		return
@@ -202,7 +216,30 @@ func fetchAndUpdate(client *netatmo.Client, ts *store.TimeSeries, engine *foreca
 		return
 	}
 	ts.Append(obs)
+	reconcileCompletedHours(src, ts, now)
 
 	log.Printf("Scheduler: updated — T=%.1f°C H=%.0f%% W=%.1fkm/h — recomputing forecast", obs.Temperature, obs.Humidity, obs.WindSpeed)
 	engine.Compute()
+}
+
+// reconcileCompletedHours replaces the stored values for the last few
+// *completed* hours with Netatmo's own hourly aggregates. A live reading is
+// only a snapshot: it can't supply a clock-hour rain total, and its hourly
+// bucket is provisional until the hour is over. The hour still in progress is
+// left to the live reading.
+func reconcileCompletedHours(src stationSource, ts *store.TimeSeries, now time.Time) {
+	hist, err := src.GetHistory(now.Add(-reconcileWindow), now)
+	if err != nil {
+		log.Printf("Scheduler: could not refresh recent hours: %v", err)
+		return
+	}
+
+	currentHour := store.HourStart(now.Unix())
+	completed := make([]netatmo.Observation, 0, len(hist))
+	for _, o := range hist {
+		if store.HourStart(o.Timestamp) < currentHour {
+			completed = append(completed, o)
+		}
+	}
+	ts.Backfill(completed...)
 }

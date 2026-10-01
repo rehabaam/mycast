@@ -259,7 +259,7 @@ func TestGetCurrentReadsTheConfiguredModule(t *testing.T) {
 	}
 }
 
-func TestObservationUsesTheHourlyRainSum(t *testing.T) {
+func TestObservationLeavesRainToTheHourlyHistory(t *testing.T) {
 	c := newTestClient(t, serveStations(stationsFixture), "", "", "", "")
 	cur, err := c.GetCurrent()
 	if err != nil {
@@ -270,13 +270,35 @@ func TestObservationUsesTheHourlyRainSum(t *testing.T) {
 	if !ok {
 		t.Fatal("Observation() not ok")
 	}
-	// Rain is 0.1 (the latest sample) but sum_rain_1 is 0.2 mm/h, which is
-	// the unit of the hourly history.
-	if obs.Rain != 0.2 {
-		t.Errorf("Rain = %v, want 0.2 (sum over the hour)", obs.Rain)
+	// The station's rolling last-hour sum (0.2 mm) straddles two clock hours,
+	// so storing it in one hour's bucket would double-count rain that the
+	// completed hour already holds. Neither it nor the instantaneous 0.1 mm
+	// may leak into the observation.
+	if cur.SumRain1h != 0.2 {
+		t.Fatalf("fixture SumRain1h = %v, want 0.2", cur.SumRain1h)
+	}
+	if obs.Rain != 0 {
+		t.Errorf("Rain = %v, want 0 (the clock-hour total comes from history)", obs.Rain)
 	}
 	if obs.Timestamp != 1781000000 || obs.Temperature != 16.6 || obs.Humidity != 84 || obs.WindSpeed != 3 || obs.WindAngle != 102 {
 		t.Errorf("Observation = %+v", obs)
+	}
+}
+
+func TestGetCurrentRecordsWhenItWasFetched(t *testing.T) {
+	c := newTestClient(t, serveStations(stationsFixture), "", "", "", "")
+
+	before := time.Now()
+	cur, err := c.GetCurrent()
+	after := time.Now()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cur.FetchedAt.Before(before) || cur.FetchedAt.After(after) {
+		t.Errorf("FetchedAt = %v, want within [%v, %v]", cur.FetchedAt, before, after)
+	}
+	if latest, _ := c.Latest(); !latest.FetchedAt.Equal(cur.FetchedAt) {
+		t.Errorf("Latest().FetchedAt = %v, want %v", latest.FetchedAt, cur.FetchedAt)
 	}
 }
 

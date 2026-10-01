@@ -22,15 +22,19 @@ type CurrentSource interface {
 
 // Server is the HTTP API server.
 type Server struct {
-	addr    string
-	engine  *forecast.Engine
-	current CurrentSource
-	ts      *store.TimeSeries
+	addr       string
+	staleAfter time.Duration
+	engine     *forecast.Engine
+	current    CurrentSource
+	ts         *store.TimeSeries
+	now        func() time.Time // replaceable in tests
 }
 
 // NewServer creates a server that will listen on addr (host:port).
-func NewServer(addr string, engine *forecast.Engine, current CurrentSource, ts *store.TimeSeries) *Server {
-	return &Server{addr: addr, engine: engine, current: current, ts: ts}
+// staleAfter is how long the cached /current reading may go without being
+// refreshed before the response is flagged stale.
+func NewServer(addr string, staleAfter time.Duration, engine *forecast.Engine, current CurrentSource, ts *store.TimeSeries) *Server {
+	return &Server{addr: addr, staleAfter: staleAfter, engine: engine, current: current, ts: ts, now: time.Now}
 }
 
 // Handler returns the API's routes wrapped in its middleware.

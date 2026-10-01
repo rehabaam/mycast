@@ -78,6 +78,7 @@ final class WeatherDecodingTests: XCTestCase {
         let current = try decodeCurrent("current")
 
         XCTAssertTrue(current.outdoorAvailable)
+        XCTAssertFalse(current.stale)
         XCTAssertEqual(current.outdoorTemp, 16.6, accuracy: 0.001)
         XCTAssertEqual(current.outdoorHumidity, 84, accuracy: 0.001)
         XCTAssertEqual(current.apparentTempC, 17.24, accuracy: 0.001)
@@ -90,6 +91,15 @@ final class WeatherDecodingTests: XCTestCase {
         XCTAssertEqual(current.todayOutdoorMinC, 11.2, accuracy: 0.001)
         XCTAssertEqual(current.todayOutdoorMaxC, 17.1, accuracy: 0.001)
         XCTAssertEqual(current.timestamp, Date(timeIntervalSince1970: 1_781_000_000))
+    }
+
+    /// The server keeps serving its last good reading when fetches fail, and
+    /// says so with `stale`; the app must be able to read that.
+    func testDecodesAStaleCurrentReading() throws {
+        let current = try decodeCurrent("current_stale")
+
+        XCTAssertTrue(current.stale)
+        XCTAssertEqual(current.outdoorTemp, 16.6, accuracy: 0.001, "the last good values are still there")
     }
 
     func testDecodesCurrentWeatherWhenTheOutdoorModuleIsOffline() throws {

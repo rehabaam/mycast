@@ -157,3 +157,70 @@ func TestConcurrentAppendAndRead(t *testing.T) {
 	}
 	<-done
 }
+
+func TestBackfillInsertsInOrderReplacesAndExtendsIntoThePast(t *testing.T) {
+	ts := NewTimeSeries(10)
+	ts.Backfill(obsTemp(hourTS(1, 0), 1), obsTemp(hourTS(3, 0), 3))
+
+	ts.Backfill(obsTemp(hourTS(2, 1800), 2)) // fills the gap, in order
+	ts.Backfill(obsTemp(hourTS(3, 600), 33)) // replaces an existing hour
+	ts.Backfill(obsTemp(hourTS(0, 0), 0))    // older than everything stored
+	ts.Backfill(obsTemp(hourTS(5, 0), 5))    // newer than everything stored
+
+	if got := temps(ts); !equalFloats(got, []float64{0, 1, 2, 33, 5}) {
+		t.Errorf("temps = %v, want [0 1 2 33 5]", got)
+	}
+	all := ts.All()
+	for i := 1; i < len(all); i++ {
+		if all[i].Timestamp <= all[i-1].Timestamp {
+			t.Fatalf("timestamps not strictly ascending: %v", all)
+		}
+	}
+}
+
+func TestBackfillKeepsTheNewestWhenOverCapacity(t *testing.T) {
+	ts := NewTimeSeries(3)
+	for h := 0; h < 6; h++ {
+		ts.Backfill(obsTemp(hourTS(h, 0), float64(h)))
+	}
+	if got := temps(ts); !equalFloats(got, []float64{3, 4, 5}) {
+		t.Errorf("temps = %v, want the newest three [3 4 5]", got)
+	}
+}
+
+// Replaying history, at startup or on a refresh, says nothing about whether
+// the station is reporting now. Only live readings may clear "stale".
+func TestBackfillDoesNotCountAsTheStationReporting(t *testing.T) {
+	ts := NewTimeSeries(10)
+	ts.Backfill(obsTemp(hourTS(0, 0), 0), obsTemp(hourTS(1, 0), 1))
+
+	if !ts.UpdatedAt().IsZero() {
+		t.Fatalf("UpdatedAt = %v after Backfill only, want zero", ts.UpdatedAt())
+	}
+	if ts.Len() != 2 {
+		t.Errorf("Len = %d, want 2", ts.Len())
+	}
+
+	ts.Append(obsTemp(hourTS(2, 0), 2))
+	if ts.UpdatedAt().IsZero() {
+		t.Error("UpdatedAt still zero after a live Append")
+	}
+}
+
+func TestAppendReplacesTheNewestBackfilledHour(t *testing.T) {
+	ts := NewTimeSeries(10)
+	ts.Backfill(obsTemp(hourTS(0, 0), 10), obsTemp(hourTS(1, 0), 11))
+	ts.Append(obsTemp(hourTS(1, 1200), 15)) // the live reading in the same hour wins
+
+	if got := temps(ts); !equalFloats(got, []float64{10, 15}) {
+		t.Errorf("temps = %v, want [10 15]", got)
+	}
+}
+
+func TestHourStart(t *testing.T) {
+	for in, want := range map[int64]int64{0: 0, 3599: 0, 3600: 3600, 7199: 3600, 1781003599: 1781002800} {
+		if got := HourStart(in); got != want {
+			t.Errorf("HourStart(%d) = %d, want %d", in, got, want)
+		}
+	}
+}
