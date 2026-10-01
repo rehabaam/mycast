@@ -21,25 +21,31 @@ const hwSeason = 24
 // window.
 func holtWintersForecast(values []float64, season, horizon int) []float64 {
 	if len(values) < 2*season {
-		mu, _ := meanStd(values)
-		out := make([]float64, horizon)
-		for i := range out {
-			out[i] = mu
-		}
-		return out
+		return flatForecast(values, horizon)
 	}
 
+	// The grids are walked by integer index rather than by accumulating a
+	// float step, which would drift and skip the upper endpoint (phi = 0.98).
 	best := hwFit{sse: math.Inf(1)}
-	for alpha := 0.05; alpha < 1.0; alpha += 0.1 {
-		for beta := 0.05; beta < 1.0; beta += 0.1 {
-			for gamma := 0.05; gamma < 1.0; gamma += 0.1 {
-				for phi := 0.7; phi <= 0.98; phi += 0.04 {
+	for ai := 0; ai < 10; ai++ {
+		alpha := 0.05 + 0.1*float64(ai)
+		for bi := 0; bi < 10; bi++ {
+			beta := 0.05 + 0.1*float64(bi)
+			for gi := 0; gi < 10; gi++ {
+				gamma := 0.05 + 0.1*float64(gi)
+				for pi := 0; pi < 8; pi++ {
+					phi := 0.7 + 0.04*float64(pi)
 					if fit := hwEvaluate(values, season, alpha, beta, gamma, phi); fit.sse < best.sse {
 						best = fit
 					}
 				}
 			}
 		}
+	}
+	if best.level == nil {
+		// Every fit was NaN/Inf (e.g. non-finite input): no model to
+		// extrapolate, so fall back to the plain mean like short series do.
+		return flatForecast(values, horizon)
 	}
 
 	n := len(values)
@@ -52,6 +58,16 @@ func holtWintersForecast(values []float64, season, horizon int) []float64 {
 		phiPow *= best.phi
 		dampedSum += phiPow
 		out[h-1] = lastLevel + dampedSum*lastTrend + best.seasonal[(n+h-1)%season]
+	}
+	return out
+}
+
+// flatForecast repeats the series mean for every step.
+func flatForecast(values []float64, horizon int) []float64 {
+	mu, _ := meanStd(values)
+	out := make([]float64, horizon)
+	for i := range out {
+		out[i] = mu
 	}
 	return out
 }

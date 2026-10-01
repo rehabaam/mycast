@@ -7,11 +7,13 @@ import (
 	"github.com/rehabaam/mycast/netatmo"
 )
 
-// TimeSeries is a thread-safe circular buffer of hourly Observations.
+// TimeSeries is a thread-safe buffer of hourly Observations: at most one per
+// clock hour, in ascending time order, with the oldest dropped at capacity.
 type TimeSeries struct {
-	mu       sync.RWMutex
-	data     []netatmo.Observation
-	capacity int
+	mu        sync.RWMutex
+	data      []netatmo.Observation
+	capacity  int
+	updatedAt time.Time
 }
 
 // NewTimeSeries creates a buffer that holds maxHours of observations.
@@ -22,52 +24,48 @@ func NewTimeSeries(maxHours int) *TimeSeries {
 	}
 }
 
-// Append adds one or more observations, keeping the buffer sorted by timestamp
-// and within capacity (oldest entries are dropped).
+// floorToHour truncates a Unix timestamp to the start of its hour.
+func floorToHour(ts int64) int64 {
+	return ts - ts%3600
+}
+
+// Append adds one or more observations. Timestamps are floored to the hour,
+// so the buffer holds one slot per clock hour and its capacity really does
+// span maxHours of wall-clock time: a later observation in the same hour
+// replaces the earlier one (last write wins). Observations older than the
+// newest stored hour are ignored.
 func (ts *TimeSeries) Append(obs ...netatmo.Observation) {
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
 
 	for _, o := range obs {
-		// Skip if duplicate or older than the last stored entry.
-		if len(ts.data) > 0 && o.Timestamp <= ts.data[len(ts.data)-1].Timestamp {
-			// Update in-place if same timestamp (refresh current hour).
-			if len(ts.data) > 0 && o.Timestamp == ts.data[len(ts.data)-1].Timestamp {
-				ts.data[len(ts.data)-1] = o
-			}
+		o.Timestamp = floorToHour(o.Timestamp)
+
+		n := len(ts.data)
+		switch {
+		case n > 0 && o.Timestamp < ts.data[n-1].Timestamp:
 			continue
+		case n > 0 && o.Timestamp == ts.data[n-1].Timestamp:
+			ts.data[n-1] = o
+		default:
+			ts.data = append(ts.data, o)
 		}
-		ts.data = append(ts.data, o)
+		ts.updatedAt = time.Now()
 	}
 
-	// Trim to capacity.
 	if len(ts.data) > ts.capacity {
 		ts.data = ts.data[len(ts.data)-ts.capacity:]
 	}
 }
 
-// All returns a copy of all stored observations in ascending time order.
+// All returns a copy of all stored observations in ascending time order, one
+// per hour (hours with no data are simply absent).
 func (ts *TimeSeries) All() []netatmo.Observation {
 	ts.mu.RLock()
 	defer ts.mu.RUnlock()
 	out := make([]netatmo.Observation, len(ts.data))
 	copy(out, ts.data)
 	return out
-}
-
-// Since returns observations with timestamps >= the given time.
-func (ts *TimeSeries) Since(t time.Time) []netatmo.Observation {
-	ts.mu.RLock()
-	defer ts.mu.RUnlock()
-	unix := t.Unix()
-	for i, o := range ts.data {
-		if o.Timestamp >= unix {
-			out := make([]netatmo.Observation, len(ts.data)-i)
-			copy(out, ts.data[i:])
-			return out
-		}
-	}
-	return nil
 }
 
 // Len returns the number of stored observations.
@@ -77,57 +75,11 @@ func (ts *TimeSeries) Len() int {
 	return len(ts.data)
 }
 
-// Temperatures extracts the temperature time series as a plain float64 slice.
-func (ts *TimeSeries) Temperatures() []float64 {
+// UpdatedAt reports the wall-clock time of the last accepted Append, or the
+// zero time if nothing has ever been stored. It tells a consumer how long it
+// has been since the station last delivered data.
+func (ts *TimeSeries) UpdatedAt() time.Time {
 	ts.mu.RLock()
 	defer ts.mu.RUnlock()
-	out := make([]float64, len(ts.data))
-	for i, o := range ts.data {
-		out[i] = o.Temperature
-	}
-	return out
-}
-
-// Humidities extracts the humidity time series.
-func (ts *TimeSeries) Humidities() []float64 {
-	ts.mu.RLock()
-	defer ts.mu.RUnlock()
-	out := make([]float64, len(ts.data))
-	for i, o := range ts.data {
-		out[i] = o.Humidity
-	}
-	return out
-}
-
-// WindSpeeds extracts the wind speed time series.
-func (ts *TimeSeries) WindSpeeds() []float64 {
-	ts.mu.RLock()
-	defer ts.mu.RUnlock()
-	out := make([]float64, len(ts.data))
-	for i, o := range ts.data {
-		out[i] = o.WindSpeed
-	}
-	return out
-}
-
-// WindAngles extracts the wind angle time series.
-func (ts *TimeSeries) WindAngles() []float64 {
-	ts.mu.RLock()
-	defer ts.mu.RUnlock()
-	out := make([]float64, len(ts.data))
-	for i, o := range ts.data {
-		out[i] = o.WindAngle
-	}
-	return out
-}
-
-// Rains extracts the precipitation time series.
-func (ts *TimeSeries) Rains() []float64 {
-	ts.mu.RLock()
-	defer ts.mu.RUnlock()
-	out := make([]float64, len(ts.data))
-	for i, o := range ts.data {
-		out[i] = o.Rain
-	}
-	return out
+	return ts.updatedAt
 }

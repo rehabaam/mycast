@@ -11,6 +11,7 @@ import Foundation
 extension CurrentWeather {
     static let preview = CurrentWeather(
         timestamp: Date(),
+        outdoorAvailable: true,
         outdoorTemp: 16.6,
         outdoorHumidity: 84,
         apparentTempC: 15.9,

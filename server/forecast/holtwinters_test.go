@@ -28,6 +28,64 @@ func TestHoltWintersForecastDeterministic(t *testing.T) {
 	}
 }
 
+// An additive model must be translation-equivariant: shifting every input by
+// a constant shifts every forecast by exactly that constant. Unlike a
+// determinism check, this fails if the level, seasonal or parameter-search
+// logic quietly depends on absolute values.
+func TestHoltWintersForecastIsTranslationEquivariant(t *testing.T) {
+	series := syntheticSeasonalSeries(6)
+	shifted := make([]float64, len(series))
+	for i, v := range series {
+		shifted[i] = v + 7.5
+	}
+
+	base := holtWintersForecast(series, hwSeason, 48)
+	moved := holtWintersForecast(shifted, hwSeason, 48)
+
+	for i := range base {
+		if d := moved[i] - (base[i] + 7.5); d > 1e-6 || d < -1e-6 {
+			t.Fatalf("step %d: shifted forecast %.6f, want %.6f", i, moved[i], base[i]+7.5)
+		}
+	}
+}
+
+// The trend is damped so that a recent fall doesn't get extrapolated
+// indefinitely — the failure FORECAST.md describes. Five steady days followed
+// by a sharp fall (0.3 °C/h over the last day) leaves a strongly negative
+// trend at the end; continuing it linearly would put the last day of the
+// horizon near -11 °C, and damping must hold it well above that.
+func TestHoltWintersDampsAStrongTrend(t *testing.T) {
+	const hours, fallHours, fallPerHour = 6 * 24, 24, 0.3
+	series := make([]float64, hours)
+	for i := range series {
+		series[i] = 15 + 4*math.Sin(2*math.Pi*float64(i%24)/24)
+		if k := i - (hours - fallHours); k > 0 {
+			series[i] -= fallPerHour * float64(k)
+		}
+	}
+
+	fc := holtWintersForecast(series, hwSeason, 72)
+
+	var gotTail, linearTail float64
+	end := series[hours-1]
+	for h := 49; h <= 72; h++ {
+		gotTail += fc[h-1] / 24
+		linearTail += (end - fallPerHour*float64(h)) / 24
+	}
+	if gotTail < linearTail+4 {
+		t.Errorf("last-day mean %.2f is within 4 °C of undamped extrapolation %.2f: trend is not being damped", gotTail, linearTail)
+	}
+}
+
+func TestHoltWintersDoesNotPanicOnNonFiniteInput(t *testing.T) {
+	series := syntheticSeasonalSeries(3)
+	series[10] = math.NaN()
+	fc := holtWintersForecast(series, hwSeason, 12)
+	if len(fc) != 12 {
+		t.Fatalf("len(fc) = %d, want 12", len(fc))
+	}
+}
+
 func TestHoltWintersForecastTracksSeasonalPattern(t *testing.T) {
 	series := syntheticSeasonalSeries(6)
 	fc := holtWintersForecast(series, hwSeason, 24)

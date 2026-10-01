@@ -11,7 +11,13 @@ type precipResult struct {
 // precipForecast uses a persistence + climatological pattern model.
 // Rain is kept separate from the ML models because it is intermittent and
 // highly non-Gaussian — regression models tend to predict near-zero always.
-func precipForecast(rains []float64, steps int) precipResult {
+//
+// rains must be a contiguous hourly series (one value per hour, in mm/h, no
+// gaps), and lastHour is the UTC hour-of-day [0,23] of its final sample.
+// Hour-of-day is derived from that anchor rather than from the slice index,
+// so the climatology stays aligned however the series starts. Forecast step
+// h (1-based) is the hour h after the final sample.
+func precipForecast(rains []float64, lastHour, steps int) precipResult {
 	n := len(rains)
 	res := precipResult{
 		amounts:       make([]float64, steps),
@@ -28,7 +34,7 @@ func precipForecast(rains []float64, steps int) precipResult {
 	hourWet := make([]int, 24)
 	hourAmount := make([]float64, 24)
 	for i, r := range rains {
-		h := i % 24
+		h := ((lastHour-(n-1-i))%24 + 24) % 24
 		hourCount[h]++
 		if r > wetThreshold {
 			hourWet[h]++
@@ -49,7 +55,6 @@ func precipForecast(rains []float64, steps int) precipResult {
 
 	// Recent rain rate via exponential smoothing.
 	recentRate := expSmooth(rains, 0.4)
-	lastHour := n % 24
 
 	for h := 1; h <= steps; h++ {
 		hour := (lastHour + h) % 24

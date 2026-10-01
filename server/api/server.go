@@ -2,8 +2,9 @@ package api
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"log"
+	"net"
 	"net/http"
 	"time"
 
@@ -12,44 +13,87 @@ import (
 	"github.com/rehabaam/mycast/store"
 )
 
+// CurrentSource supplies the latest station reading. It must answer from
+// memory: the API never calls Netatmo on behalf of a request, so clients can't
+// drive upstream traffic.
+type CurrentSource interface {
+	Latest() (*netatmo.Current, bool)
+}
+
 // Server is the HTTP API server.
 type Server struct {
-	port   string
-	engine *forecast.Engine
-	client *netatmo.Client
-	ts     *store.TimeSeries
+	addr    string
+	engine  *forecast.Engine
+	current CurrentSource
+	ts      *store.TimeSeries
 }
 
-func NewServer(port string, engine *forecast.Engine, client *netatmo.Client, ts *store.TimeSeries) *Server {
-	return &Server{port: port, engine: engine, client: client, ts: ts}
+// NewServer creates a server that will listen on addr (host:port).
+func NewServer(addr string, engine *forecast.Engine, current CurrentSource, ts *store.TimeSeries) *Server {
+	return &Server{addr: addr, engine: engine, current: current, ts: ts}
 }
 
-func (s *Server) Start(ctx context.Context) error {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/health", handleHealth)
-	mux.HandleFunc("/current", s.handleCurrent)
-	mux.HandleFunc("/forecast", s.handleForecast)
-	mux.HandleFunc("/debug", s.handleDebug)
-
-	srv := &http.Server{
-		Addr:         fmt.Sprintf(":%s", s.port),
-		Handler:      loggingMiddleware(jsonMiddleware(mux)),
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 30 * time.Second,
+// Handler returns the API's routes wrapped in its middleware.
+func (s *Server) Handler() http.Handler {
+	routes := map[string]http.HandlerFunc{
+		"/health":   handleHealth,
+		"/current":  s.handleCurrent,
+		"/forecast": s.handleForecast,
+		"/debug":    s.handleDebug,
 	}
 
-	go func() {
-		<-ctx.Done()
+	// A single catch-all instead of ServeMux method patterns, so that 404 and
+	// 405 come back as JSON like every other response.
+	root := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h, ok := routes[r.URL.Path]
+		if !ok {
+			writeError(w, http.StatusNotFound, "not found")
+			return
+		}
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			w.Header().Set("Allow", "GET, HEAD")
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		h(w, r)
+	})
+
+	return loggingMiddleware(jsonMiddleware(root))
+}
+
+// Listen binds the server's address. Binding is separate from Serve so the
+// caller learns about a port conflict before announcing that it is running.
+func (s *Server) Listen() (net.Listener, error) {
+	return net.Listen("tcp", s.addr)
+}
+
+// Serve serves on ln until ctx is cancelled, then shuts down gracefully. It
+// returns once the server has stopped; a nil error means a clean shutdown.
+func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
+	srv := &http.Server{
+		Handler:           s.Handler(),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    16 << 10,
+	}
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- srv.Serve(ln) }()
+
+	select {
+	case err := <-errCh:
+		return err
+	case <-ctx.Done():
 		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		_ = srv.Shutdown(shutCtx)
-	}()
-
-	log.Printf("API server listening on :%s", s.port)
-	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		err := srv.Shutdown(shutCtx)
+		if serveErr := <-errCh; serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+			return serveErr
+		}
 		return err
 	}
-	return nil
 }
 
 func loggingMiddleware(next http.Handler) http.Handler {

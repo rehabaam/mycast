@@ -33,6 +33,8 @@ ECMWF's IFS model, by contrast, assimilates a global grid of satellite, radioson
 | Station-only damped Holt-Winters | 1.12 | 1.53 |
 | **ECMWF, raw (Open-Meteo, exact station coordinates)** | **0.74** | **0.93** |
 
+> **About these numbers.** They are one-off measurements from a single calm 7-day window on one station. The harness and station data behind them are not in this repository, so they cannot be reproduced from it, and the same applies to the damping comparison under "Why damped, not plain, trend" and the precipitation tables below. Read them as the evidence that motivated the design, not as a maintained benchmark. (The unit tests do pin the *behaviour* that came out of them: `TestHoltWintersDampsAStrongTrend` fails if damping is removed.)
+
 ECMWF meaningfully outperforms the pure local model at this lead time, as expected. The remaining error is largely the gap between ECMWF's ~28km grid point and the station's exact microclimate — which is what the local bias correction below is for.
 
 ---
@@ -157,7 +159,7 @@ The base rate of 0.30 (30%) is a conservative climatological prior for northern 
 
 Two derived fields added for API consumers (e.g. a mobile app's home screen):
 
-- **Condition** (`forecast/condition.go`): ECMWF's `weather_code` (WMO table 4677) is mapped to a short human-readable summary (e.g. `51` → "Light drizzle"). Only available on the ECMWF path — the station-only fallback has no source for a categorical condition and reports `"Unknown"`. The day-level summary uses the code at local midday as representative.
+- **Condition** (`forecast/condition.go`): ECMWF's `weather_code` (WMO table 4677) is mapped to a short human-readable summary (e.g. `51` → "Light drizzle"). Only available on the ECMWF path — the station-only fallback has no source for a categorical condition and reports `"Unknown"`. The day-level summary uses the code at the hour nearest local midday as representative (for a day already past noon, its first remaining hour).
 - **Apparent temperature** (`forecast/apparent.go`): computed locally in Go from temperature + humidity + wind speed (the Australian Bureau of Meteorology formula — the same one Open-Meteo itself documents using), rather than taken from Open-Meteo's `apparent_temperature` field. This makes it available identically on both the ECMWF and station-only paths, from whatever temp/humidity/wind forecast each path already produces, rather than being another field that silently disappears on fallback.
 - **Sunrise/sunset**: sourced from Open-Meteo's `daily` block (astronomical, not a weather-model output — so it's identical across NWP models, but still only fetched on the ECMWF path). Unlike apparent temperature, this one *is* only available when Open-Meteo is reachable — a local sunrise/sunset calculation from the station's own lat/lon would be straightforward to add later if the station-only fallback needs it too, but hasn't been implemented.
 
@@ -179,9 +181,21 @@ Aurora data is only computed on the ECMWF path (it needs cloud cover and sunrise
 
 ## Staleness Self-Healing
 
-The `Forecast` struct is fully cached at `Compute()` time, including its day labels (`buildDays` derives "today"/"tomorrow" from `time.Now()` when it runs, not when the response is served). If the background scheduler stops ticking for any reason — repeated upstream failures, or the whole process being paused (observed directly during development: this dev environment paused between sessions, and the cached forecast kept serving the wrong day for 12+ hours afterward with zero scheduler log lines) — the cached forecast's date labels go silently wrong indefinitely, with no indication beyond `generated_at`.
+The `Forecast` struct is fully cached at `Compute()` time, including its day labels (`buildDays` derives "today"/"tomorrow" from the clock when it runs, not when the response is served). If the background scheduler stops ticking for any reason — repeated upstream failures, or the whole process being paused (observed directly during development: this dev environment paused between sessions, and the cached forecast kept serving the wrong day for 12+ hours afterward with zero scheduler log lines) — the cached forecast's date labels go silently wrong indefinitely, with no indication beyond `generated_at`.
 
-`Engine.Fresh()` (used by the `/forecast` handler instead of the raw `Latest()` accessor) fixes this: if the cached forecast is older than `staleAfter` (set in `main.go` to `2 × FETCH_INTERVAL_MIN`), it forces a synchronous `Compute()` before responding. The response's `stale` field is `true` only if that recompute still couldn't produce a current forecast — e.g. the time series has no data at all yet. Note this recomputes from whatever is already in the time series and pulls a fresh ECMWF forecast; it does not itself re-fetch fresh Netatmo station readings — a stalled Netatmo scheduler will still get a fresh forecast (fixing the reported day-label bug) but from slightly stale underlying station history.
+`Engine.Fresh()` (used by the `/forecast` handler instead of the raw `Latest()` accessor) fixes this: if the cached forecast is older than `staleAfter` (set in `main.go` to `2 × FETCH_INTERVAL_MIN`), it forces a synchronous `Compute()` before responding. Concurrent requests on a stale cache share one recompute (a mutex plus a re-check), and the scheduler's own `Compute()` takes the same lock, so a slow computation can never overwrite a newer result.
+
+A recompute stamps the forecast with the current time, so the forecast's own age can't say whether the *data* is current. The `stale` field therefore reports station silence instead: it is `true` when the time series has accepted no observation for longer than `staleAfter` (`store.TimeSeries.UpdatedAt`), or when there is no data at all (in which case `days` is `[]`). Note the recompute works from whatever is already in the time series and pulls a fresh ECMWF forecast; it does not itself re-fetch Netatmo — a stalled scheduler still gets correctly labelled days, but from older station history, and is flagged `stale` so clients can say so. A reading from an unreachable outdoor module is deliberately not stored (it would be a fake 0 °C), so an offline module also turns `stale` on after two missed intervals.
+
+---
+
+## Days, Hours and Time Zones
+
+The model works on a 72-hour horizon starting at the next whole hour. What the API calls a *day* is a **calendar day in the station's timezone** (Netatmo reports it with the station's location; if it's missing or unrecognised the service falls back to UTC and says so in the log). The first day therefore holds only the hours that remain today, and at most three days are returned; hours that would spill onto a fourth are dropped.
+
+The store keeps one observation per clock hour (timestamps are floored to the hour; a later reading in the same hour replaces the earlier one), so its capacity really does span `HISTORY_DAYS` of wall-clock time. The station-only model needs a series with no missing hours, so before fitting it the engine fills gaps (`forecast/grid.go`: interpolation for temperature, humidity and speeds; last value for directions; zero for rain) and models through any gap between the newest observation and the first reported hour, keeping every value on the hour it is labelled with. Precipitation climatology is bucketed by the hour-of-day of each sample's timestamp, not by its position in the slice.
+
+Sunrise and sunset come from Open-Meteo as instants; the date a day reports is the local date each instant falls on, and darkness at any hour is decided from the nearest preceding sun event.
 
 ---
 
@@ -243,7 +257,7 @@ store.TimeSeries               openmeteo.Client.Fetch()
 
 2. **Precipitation probability's exact accuracy is unverified.** The amount forecast was backtested directly (see above); the `precipitation_probability` field could only be spot-checked on the live forecast, not backtested at a fixed historical lead time, since Open-Meteo doesn't archive it that way.
 
-3. **Bias correction evidence is from a single ~7-day window.** The MAE numbers above come from one backtest on this station's available history. A calm week without a frontal passage favors the local model more than a stormy week would — more validation over time (different seasons, different weather regimes) would make the comparison more robust.
+3. **Bias correction evidence is from a single ~7-day window, and isn't reproducible from this repo.** The MAE numbers above come from one backtest on this station's available history. A calm week without a frontal passage favors the local model more than a stormy week would — more validation over time (different seasons, different weather regimes) would make the comparison more robust.
 
 4. **Station-only fallback still can't forecast real weather changes.** If Open-Meteo is down for an extended period, the fallback model is a local statistical extrapolation with the same structural ceiling described above — useful as a fallback, not a substitute.
 
@@ -251,6 +265,10 @@ store.TimeSeries               openmeteo.Client.Fetch()
 
 6. **Aurora doesn't use solar wind speed or IMF Bz.** The heuristic uses NOAA's 3-hour Kp forecast only — it can't capture a sudden substorm the Kp forecast didn't predict, and it has no real short-term (sub-hour) nowcasting skill. NOAA's OVATION model (gridded, ~30-70 min lead) would add that, but wasn't integrated — the 3-day Kp forecast was a better fit for this app's multi-day forecast structure.
 
-7. **"Darkness" is sunset-to-sunrise, not true astronomical darkness.** Aurora actually needs the sky to be properly dark (astronomical twilight), not just past sunset. Near the summer solstice in Finland this overestimates the viewing window (it's never fully dark); the rest of the year the approximation is reasonable. A proper twilight calculation would need more than the sunrise/sunset times already available.
+7. **"Darkness" is sunset-to-sunrise, not true astronomical darkness.** Each hour is judged against the most recent sunrise/sunset event before it, so it is correct across day boundaries. Aurora actually needs the sky to be properly dark (astronomical twilight), not just past sunset. Near the summer solstice in Finland this overestimates the viewing window (it's never fully dark); the rest of the year the approximation is reasonable. A proper twilight calculation would need more than the sunrise/sunset times already available.
 
 8. **Geomagnetic pole coordinates are a fixed approximation.** The dipole pole location drifts ~0.1-0.2°/year; the constant in `aurora.go` isn't kept in sync with that drift. The effect on `requiredKp` is small (a fraction of a degree of geomagnetic latitude) and not worth automating for a single fixed station.
+
+9. **Wind and rain modules aren't checked for availability.** An unreachable *outdoor* module is detected and its readings are never stored, but an offline wind or rain module still reads as zero wind or zero rain, which biases the wind-speed correction and the station-only precipitation model until it comes back.
+
+10. **Kp beyond NOAA's published window.** If NOAA's Kp series ends before the 72-hour horizon, the last known value is repeated for the remaining hours (persistence), which is an assumption rather than a forecast.

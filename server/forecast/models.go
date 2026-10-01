@@ -1,6 +1,9 @@
 package forecast
 
-import "time"
+import (
+	"math"
+	"time"
+)
 
 // HourlyPoint holds a single hourly forecast value.
 type HourlyPoint struct {
@@ -120,10 +123,12 @@ type Forecast struct {
 	GeneratedAt time.Time `json:"generated_at"`
 	StationID   string    `json:"station_id"`
 	Model       string    `json:"model"`
-	// Stale is true if this forecast is older than the engine's configured
-	// staleness threshold even after Fresh() attempted a recompute — e.g.
-	// no station data has ever arrived. Consumers should treat a stale
-	// forecast's day labels/values with reduced confidence.
+	// Stale is true when the forecast should be treated with reduced
+	// confidence: the station has delivered no data within the engine's
+	// staleness threshold (a stalled scheduler or an offline outdoor module),
+	// or there is not enough data to produce any days at all. Recomputing
+	// cannot fix this, so it is evaluated against the station's data, not the
+	// forecast's own age.
 	Stale bool          `json:"stale"`
 	Days  []DayForecast `json:"days"`
 }
@@ -137,9 +142,12 @@ func degreeToCardinal(deg float64) string {
 	return dirs[idx]
 }
 
+// normAngle maps any angle into [0, 360), keeping its fractional part so
+// values just inside a compass-sector boundary aren't pushed across it.
 func normAngle(deg float64) float64 {
-	for deg < 0 {
+	deg = math.Mod(deg, 360)
+	if deg < 0 {
 		deg += 360
 	}
-	return float64(int(deg) % 360)
+	return deg
 }

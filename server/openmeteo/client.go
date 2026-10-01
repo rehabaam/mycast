@@ -7,6 +7,8 @@ package openmeteo
 import (
 	"encoding/json"
 	"fmt"
+	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -18,26 +20,35 @@ import (
 // given forecast.
 const ModelName = "ecmwf_ifs025"
 
-const baseURL = "https://api.open-meteo.com/v1/forecast"
+const (
+	defaultBaseURL = "https://api.open-meteo.com/v1/forecast"
+
+	// maxResponseBytes caps how much of a response is read, so a broken or
+	// hostile upstream can't exhaust memory.
+	maxResponseBytes = 4 << 20
+)
 
 // Client queries Open-Meteo for a fixed location.
 type Client struct {
 	http     *http.Client
+	baseURL  string
 	lat, lon float64
 }
 
 // NewClient returns a client for the given coordinates.
 func NewClient(lat, lon float64) *Client {
 	return &Client{
-		http: &http.Client{Timeout: 10 * time.Second},
-		lat:  lat,
-		lon:  lon,
+		http:    &http.Client{Timeout: 10 * time.Second},
+		baseURL: defaultBaseURL,
+		lat:     lat,
+		lon:     lon,
 	}
 }
 
 // HourlyData holds parallel hourly arrays. Time[i] (Unix seconds, UTC)
 // corresponds to index i of every other slice. Daily holds separate,
-// day-resolution data (indexed by day, not hour).
+// day-resolution data (indexed by day, not hour). A value Open-Meteo reported
+// as null is NaN here, so callers can tell "missing" from a genuine zero.
 type HourlyData struct {
 	Time          []int64
 	TemperatureC  []float64
@@ -73,7 +84,7 @@ func (c *Client) Fetch(pastDays, forecastDays int) (*HourlyData, error) {
 		"forecast_days": {strconv.Itoa(forecastDays)},
 		"models":        {ModelName},
 	}
-	u := baseURL + "?" + params.Encode()
+	u := c.baseURL + "?" + params.Encode()
 
 	resp, err := c.http.Get(u)
 	if err != nil {
@@ -87,15 +98,15 @@ func (c *Client) Fetch(pastDays, forecastDays int) (*HourlyData, error) {
 
 	var raw struct {
 		Hourly struct {
-			Time        []string  `json:"time"`
-			Temperature []float64 `json:"temperature_2m"`
-			Humidity    []float64 `json:"relative_humidity_2m"`
-			WindSpeed   []float64 `json:"wind_speed_10m"`
-			WindDir     []float64 `json:"wind_direction_10m"`
-			Precip      []float64 `json:"precipitation"`
-			PrecipProb  []float64 `json:"precipitation_probability"`
-			WeatherCode []float64 `json:"weather_code"`
-			CloudCover  []float64 `json:"cloud_cover"`
+			Time        []string   `json:"time"`
+			Temperature []*float64 `json:"temperature_2m"`
+			Humidity    []*float64 `json:"relative_humidity_2m"`
+			WindSpeed   []*float64 `json:"wind_speed_10m"`
+			WindDir     []*float64 `json:"wind_direction_10m"`
+			Precip      []*float64 `json:"precipitation"`
+			PrecipProb  []*float64 `json:"precipitation_probability"`
+			WeatherCode []*float64 `json:"weather_code"`
+			CloudCover  []*float64 `json:"cloud_cover"`
 		} `json:"hourly"`
 		Daily struct {
 			Time    []string `json:"time"`
@@ -105,7 +116,7 @@ func (c *Client) Fetch(pastDays, forecastDays int) (*HourlyData, error) {
 		Error  bool   `json:"error"`
 		Reason string `json:"reason"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseBytes)).Decode(&raw); err != nil {
 		return nil, fmt.Errorf("open-meteo: parse response: %w", err)
 	}
 	if raw.Error {
@@ -117,14 +128,14 @@ func (c *Client) Fetch(pastDays, forecastDays int) (*HourlyData, error) {
 
 	out := &HourlyData{
 		Time:          make([]int64, len(raw.Hourly.Time)),
-		TemperatureC:  raw.Hourly.Temperature,
-		HumidityPct:   raw.Hourly.Humidity,
-		WindSpeedKmh:  raw.Hourly.WindSpeed,
-		WindDirDeg:    raw.Hourly.WindDir,
-		PrecipMM:      raw.Hourly.Precip,
-		PrecipProbPct: raw.Hourly.PrecipProb,
-		WeatherCode:   raw.Hourly.WeatherCode,
-		CloudCoverPct: raw.Hourly.CloudCover,
+		TemperatureC:  nullsToNaN(raw.Hourly.Temperature),
+		HumidityPct:   nullsToNaN(raw.Hourly.Humidity),
+		WindSpeedKmh:  nullsToNaN(raw.Hourly.WindSpeed),
+		WindDirDeg:    nullsToNaN(raw.Hourly.WindDir),
+		PrecipMM:      nullsToNaN(raw.Hourly.Precip),
+		PrecipProbPct: nullsToNaN(raw.Hourly.PrecipProb),
+		WeatherCode:   nullsToNaN(raw.Hourly.WeatherCode),
+		CloudCoverPct: nullsToNaN(raw.Hourly.CloudCover),
 	}
 	for i, s := range raw.Hourly.Time {
 		t, err := time.Parse("2006-01-02T15:04", s)
@@ -162,4 +173,18 @@ func (c *Client) Fetch(pastDays, forecastDays int) (*HourlyData, error) {
 	}
 
 	return out, nil
+}
+
+// nullsToNaN converts decoded JSON numbers to plain floats, mapping null to
+// NaN. Decoding straight into []float64 would silently turn null into 0.
+func nullsToNaN(in []*float64) []float64 {
+	out := make([]float64, len(in))
+	for i, p := range in {
+		if p == nil {
+			out[i] = math.NaN()
+		} else {
+			out[i] = *p
+		}
+	}
+	return out
 }

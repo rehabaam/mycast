@@ -19,7 +19,7 @@ struct CurrentConditionsCard: View {
                     .frame(width: 44, height: 44)
                     .background(Color.accentColor, in: Circle())
 
-                Text(current.outdoorTemp.formattedTemperature)
+                Text(current.outdoorAvailable ? current.outdoorTemp.formattedTemperature : "—")
                     .font(.system(size: 44, weight: .bold))
 
                 VStack(alignment: .leading, spacing: 2) {
@@ -32,8 +32,15 @@ struct CurrentConditionsCard: View {
                 }
                 Spacer()
             }
+            if !current.outdoorAvailable {
+                Label("Outdoor sensor unavailable", systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.orange)
+            }
             HStack(spacing: 10) {
-                Label("\(Int(current.outdoorHumidity))%", systemImage: "humidity")
+                if current.outdoorAvailable {
+                    Label("\(Int(current.outdoorHumidity))%", systemImage: "humidity")
+                }
                 Label("\(Int(current.windSpeed)) km/h \(current.windAngle.compassCardinal)", systemImage: "wind")
                 Label("\(current.sumRain24h.formatted(.number.precision(.fractionLength(1)))) mm/24h", systemImage: "drop.fill")
             }
@@ -43,8 +50,10 @@ struct CurrentConditionsCard: View {
             .lineLimit(1)
 
             HStack(spacing: 10) {
-                Label("Feels \(current.apparentTempC.formattedTemperature) \(current.tempTrend.trendArrow)", systemImage: "thermometer.variable")
-                Label("H:\(current.todayOutdoorMaxC.formattedTemperature) L:\(current.todayOutdoorMinC.formattedTemperature)", systemImage: "arrow.up.arrow.down")
+                if current.outdoorAvailable {
+                    Label("Feels \(current.apparentTempC.formattedTemperature) \(current.tempTrend.trendArrow)", systemImage: "thermometer.variable")
+                    Label("H:\(current.todayOutdoorMaxC.formattedTemperature) L:\(current.todayOutdoorMinC.formattedTemperature)", systemImage: "arrow.up.arrow.down")
+                }
                 Label("\(Int(current.pressure)) hPa \(current.pressureTrend.trendArrow)", systemImage: "gauge")
             }
             .labelStyle(CompactLabelStyle())

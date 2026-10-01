@@ -25,6 +25,7 @@ type Place struct {
 	City     string     `json:"city"`
 	Country  string     `json:"country"`
 	Altitude float64    `json:"altitude"`
+	Timezone string     `json:"timezone"` // IANA name, e.g. "Europe/Helsinki"
 }
 
 type IndoorDashboard struct {
@@ -57,9 +58,9 @@ type MeasureResponse struct {
 }
 
 type MeasureBody struct {
-	BegTime  int64       `json:"beg_time"`
-	StepTime int64       `json:"step_time"`
-	Value    [][]float64 `json:"value"`
+	BegTime  int64        `json:"beg_time"`
+	StepTime int64        `json:"step_time"`
+	Value    [][]*float64 `json:"value"` // nil entries are steps with no data
 }
 
 // Observation holds a single point-in-time reading across all station variables.
@@ -71,15 +72,20 @@ type Observation struct {
 	WindAngle   float64 // degrees 0-360
 	GustSpeed   float64 // km/h
 	GustAngle   float64 // degrees 0-360
-	Rain        float64 // mm (current measurement interval)
+	Rain        float64 // mm accumulated over the hour
 }
 
 // Current holds the latest live readings from the station.
 type Current struct {
-	Timestamp       int64
+	Timestamp int64
+
+	// OutdoorAvailable is false when the outdoor module is missing,
+	// unreachable, or reported no temperature/humidity. The outdoor fields
+	// below are then zero and must not be treated as a real reading.
+	OutdoorAvailable bool
+
 	OutdoorTemp     float64
 	OutdoorHumidity float64
-	ApparentTempC   float64 // "feels like", derived from temp+humidity+wind
 	IndoorTemp      float64
 	IndoorHumidity  float64
 	Pressure        float64
@@ -112,4 +118,25 @@ type ModuleStatus struct {
 	Reachable      bool
 	RFStatus       int
 	LastSeen       int64
+}
+
+// Observation converts the live reading into a time-series Observation. ok is
+// false when the outdoor module has no usable reading, in which case the
+// returned Observation must not be stored: its zero temperature/humidity
+// would be indistinguishable from a real 0 °C / 0 % reading. Rain uses the
+// rolling one-hour sum so it matches the units of the hourly history.
+func (c *Current) Observation() (obs Observation, ok bool) {
+	if !c.OutdoorAvailable {
+		return Observation{}, false
+	}
+	return Observation{
+		Timestamp:   c.Timestamp,
+		Temperature: c.OutdoorTemp,
+		Humidity:    c.OutdoorHumidity,
+		WindSpeed:   c.WindSpeed,
+		WindAngle:   c.WindAngle,
+		GustSpeed:   c.GustSpeed,
+		GustAngle:   c.GustAngle,
+		Rain:        c.SumRain1h,
+	}, true
 }

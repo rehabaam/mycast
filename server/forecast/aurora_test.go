@@ -71,24 +71,35 @@ func TestAuroraProbabilityZeroBelowThreshold(t *testing.T) {
 }
 
 func TestAuroraProbabilityScalesWithMarginAboveThreshold(t *testing.T) {
-	atThreshold := auroraProbabilityPct(4.3, 4.3, 0, true)
-	wellAbove := auroraProbabilityPct(7.3, 4.3, 0, true)
-	if atThreshold != 0 {
-		t.Errorf("auroraProbabilityPct(at threshold) = %.2f, want 0", atThreshold)
+	// 0% at the threshold, rising linearly to 100% three Kp steps above it.
+	cases := []struct{ kp, want float64 }{
+		{4.3, 0},
+		{4.8, 100.0 / 6},
+		{5.8, 50},
+		{6.8, 100.0 * 5 / 6},
+		{7.3, 100},
+		{9.0, 100}, // saturates
 	}
-	if wellAbove != 100 {
-		t.Errorf("auroraProbabilityPct(threshold+3) = %.2f, want 100 (saturates)", wellAbove)
+	for _, c := range cases {
+		got := auroraProbabilityPct(c.kp, 4.3, 0, true)
+		if d := got - c.want; d > 1e-9 || d < -1e-9 {
+			t.Errorf("auroraProbabilityPct(kp=%.1f) = %.4f, want %.4f", c.kp, got, c.want)
+		}
 	}
 }
 
 func TestAuroraProbabilityDeratesForCloudCover(t *testing.T) {
 	clear := auroraProbabilityPct(7, 4, 0, true)
 	overcast := auroraProbabilityPct(7, 4, 100, true)
+	half := auroraProbabilityPct(7, 4, 50, true)
 	if overcast != 0 {
 		t.Errorf("auroraProbabilityPct(100%% cloud) = %.2f, want 0", overcast)
 	}
-	if clear <= overcast {
-		t.Errorf("clear-sky probability (%.2f) should exceed overcast (%.2f)", clear, overcast)
+	if clear != 100 {
+		t.Errorf("auroraProbabilityPct(clear) = %.2f, want 100", clear)
+	}
+	if half != 50 {
+		t.Errorf("auroraProbabilityPct(50%% cloud) = %.2f, want 50 (derated linearly)", half)
 	}
 }
 

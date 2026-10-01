@@ -18,9 +18,11 @@ struct WeatherForecastResponse: Codable {
 struct DayForecast: Codable, Identifiable {
     let date: String
     let dayOfWeek: String
-    let sunrise: Date
-    let sunset: Date
-    let aurora: AuroraForecast
+    // The server omits these on its station-only fallback (no Open-Meteo),
+    // and `aurora` also when only the NOAA fetch fails.
+    let sunrise: Date?
+    let sunset: Date?
+    let aurora: AuroraForecast?
     let condition: DayCondition
     let temperature: TemperatureForecast
     let humidity: HumidityForecast

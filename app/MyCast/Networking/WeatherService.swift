@@ -25,7 +25,19 @@ enum WeatherServiceError: LocalizedError {
 }
 
 struct WeatherService {
-    var baseURL = URL(string: "http://localhost:8080")!
+    /// Info.plist key that overrides the server address (e.g. a LAN address
+    /// when running on a device).
+    static let baseURLInfoKey = "MyCastAPIBaseURL"
+    static let fallbackBaseURL = URL(string: "http://localhost:8080")!
+
+    var baseURL: URL = Self.configuredBaseURL()
+
+    static func configuredBaseURL(bundle: Bundle = .main) -> URL {
+        guard let string = bundle.object(forInfoDictionaryKey: baseURLInfoKey) as? String,
+              let url = URL(string: string), url.scheme != nil, url.host != nil
+        else { return fallbackBaseURL }
+        return url
+    }
 
     func fetchForecast() async throws -> WeatherForecastResponse {
         let data = try await get("forecast")
@@ -56,30 +68,40 @@ struct WeatherService {
 }
 
 extension JSONDecoder {
-    static var weatherForecast: JSONDecoder {
+    /// Decoder for `/forecast`.
+    static var weatherForecast: JSONDecoder { weatherServer }
+
+    /// Decoder for `/current`. Its CodingKeys name each key explicitly, so no
+    /// key conversion is applied.
+    static var currentWeather: JSONDecoder {
         let decoder = JSONDecoder()
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
-        decoder.dateDecodingStrategy = .custom { decoder in
-            let container = try decoder.singleValueContainer()
-            let string = try container.decode(String.self)
-            if let date = ISO8601DateFormatter.weatherWithFractionalSeconds.date(from: string) {
-                return date
-            }
-            if let date = ISO8601DateFormatter.weatherStandard.date(from: string) {
-                return date
-            }
-            throw DecodingError.dataCorruptedError(
-                in: container,
-                debugDescription: "Expected an ISO 8601 date string, got \(string)"
-            )
-        }
+        decoder.dateDecodingStrategy = .weatherServerDates
         return decoder
     }
 
-    static var currentWeather: JSONDecoder {
+    private static var weatherServer: JSONDecoder {
         let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .secondsSince1970
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        decoder.dateDecodingStrategy = .weatherServerDates
         return decoder
+    }
+}
+
+extension JSONDecoder.DateDecodingStrategy {
+    /// RFC 3339 timestamps, with or without fractional seconds.
+    static let weatherServerDates: JSONDecoder.DateDecodingStrategy = .custom { decoder in
+        let container = try decoder.singleValueContainer()
+        let string = try container.decode(String.self)
+        if let date = ISO8601DateFormatter.weatherWithFractionalSeconds.date(from: string) {
+            return date
+        }
+        if let date = ISO8601DateFormatter.weatherStandard.date(from: string) {
+            return date
+        }
+        throw DecodingError.dataCorruptedError(
+            in: container,
+            debugDescription: "Expected an ISO 8601 date string, got \(string)"
+        )
     }
 }
 

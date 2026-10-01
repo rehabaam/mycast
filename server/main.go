@@ -3,10 +3,12 @@ package main
 import (
 	"context"
 	"log"
+	"net"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
+	_ "time/tzdata" // embed the timezone database, so station timezones resolve on minimal hosts
 
 	"github.com/rehabaam/mycast/api"
 	"github.com/rehabaam/mycast/config"
@@ -18,10 +20,12 @@ import (
 )
 
 func main() {
-	cfg := config.Load()
+	cfg, err := config.Load()
+	if err != nil {
+		log.Fatalf("Configuration error: %v", err)
+	}
 
 	if cfg.ClientID == "" || cfg.ClientSecret == "" {
-
 		log.Fatal("NETATMO_CLIENT_ID and NETATMO_CLIENT_SECRET must be set")
 	}
 
@@ -39,8 +43,7 @@ func main() {
 	client := netatmo.NewClient(httpClient, cfg.StationID, cfg.OutdoorModuleID, cfg.WindModuleID, cfg.RainModuleID)
 
 	// --- Time series store ---
-	maxHours := cfg.HistoryDays * 24
-	ts := store.NewTimeSeries(maxHours)
+	ts := store.NewTimeSeries(cfg.HistoryDays * 24)
 
 	// --- Discover station/module IDs via a live reading ---
 	log.Println("Fetching current station reading...")
@@ -48,7 +51,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("Could not reach station: %v", err)
 	}
-	log.Printf("Station connected — outdoor %.1f°C, humidity %.0f%%", cur.OutdoorTemp, cur.OutdoorHumidity)
+	if cur.OutdoorAvailable {
+		log.Printf("Station connected — outdoor %.1f°C, humidity %.0f%%", cur.OutdoorTemp, cur.OutdoorHumidity)
+	} else {
+		log.Println("Station connected, but the outdoor module is unavailable — no live outdoor reading")
+	}
 
 	// --- Load historical data first (ascending timestamps) ---
 	// The current reading must be appended AFTER history so the time-ordered
@@ -64,59 +71,47 @@ func main() {
 	}
 
 	// Append the live reading last — it has the newest timestamp.
-	ts.Append(netatmo.Observation{
-		Timestamp:   cur.Timestamp,
-		Temperature: cur.OutdoorTemp,
-		Humidity:    cur.OutdoorHumidity,
-		WindSpeed:   cur.WindSpeed,
-		WindAngle:   cur.WindAngle,
-		GustSpeed:   cur.GustSpeed,
-		GustAngle:   cur.GustAngle,
-		Rain:        cur.Rain,
-	})
+	if obs, ok := cur.Observation(); ok {
+		ts.Append(obs)
+	}
 
-	// --- NWP forecast source (Open-Meteo/ECMWF), if the station's location
-	// is known and the integration is enabled. The engine falls back to the
-	// pure station model automatically if this is nil or later fails.
-	var om *openmeteo.Client
-	var lat, lon float64
+	// --- Forecast engine ---
+	// A station that has been silent for more than 2 fetch intervals is
+	// considered stale — enough slack that a single missed tick doesn't trip
+	// it, but short enough that a stalled scheduler (e.g. this process being
+	// paused, repeated upstream failures, or an offline outdoor module) gets
+	// flagged. The same window bounds how old a cached forecast may get
+	// before the next read recomputes it.
+	staleAfter := 2 * time.Duration(cfg.FetchIntervalMin) * time.Minute
+
+	engineCfg := forecast.Config{
+		StationID:  client.StationID(),
+		Location:   stationLocation(client.Timezone()),
+		StaleAfter: staleAfter,
+		PastDays:   cfg.HistoryDays,
+	}
+
+	// NWP forecast source (Open-Meteo/ECMWF), if the station's location is
+	// known and the integration is enabled. The engine falls back to the
+	// pure station model automatically if it is unset or later fails.
 	if cfg.OpenMeteoEnabled {
-		if la, lo, ok := client.Location(); ok {
-			lat, lon = la, lo
-			om = openmeteo.NewClient(lat, lon)
-			log.Printf("Open-Meteo enabled for (%.4f, %.4f) — model %s", lat, lon, openmeteo.ModelName)
+		if lat, lon, ok := client.Location(); ok {
+			engineCfg.OpenMeteo = openmeteo.NewClient(lat, lon)
+			engineCfg.Lat, engineCfg.Lon = lat, lon
+			// Logged coarsely (~1 km): the exact coordinates are the user's
+			// home location and don't belong in logs.
+			log.Printf("Open-Meteo enabled near (%.2f, %.2f) — model %s", lat, lon, openmeteo.ModelName)
+
+			// Aurora (NOAA Kp forecast) is a bonus on top of the ECMWF path,
+			// enabled alongside it because it needs the same cloud
+			// cover/sunrise/sunset data that only that path produces.
+			engineCfg.Kp = noaa.NewClient()
+			log.Println("Aurora forecasting enabled (NOAA SWPC Kp index)")
 		} else {
 			log.Println("Open-Meteo disabled: station location unknown")
 		}
 	}
-
-	// --- Aurora (NOAA Kp forecast) — a bonus on top of the ECMWF path.
-	// Always enabled when Open-Meteo is, since it needs the same cloud
-	// cover/sunrise/sunset data that only the ECMWF path produces.
-	var kp *noaa.Client
-	if om != nil {
-		kp = noaa.NewClient()
-		log.Println("Aurora forecasting enabled (NOAA SWPC Kp index)")
-	}
-
-	// --- Forecast engine ---
-	// A forecast older than 2 fetch intervals is considered stale — enough
-	// slack that a single missed tick doesn't trip it, but short enough that
-	// a stalled scheduler (e.g. this process being paused, or repeated
-	// upstream failures) gets caught and self-healed on the next read.
-	staleAfter := 2 * time.Duration(cfg.FetchIntervalMin) * time.Minute
-
-	// om/kp passed explicitly rather than storing possibly-nil concrete
-	// pointers directly: a nil pointer wrapped in a non-nil interface value
-	// would defeat the engine's internal `!= nil` fallback checks. kp is
-	// only ever set alongside om (see above), so these are the only two
-	// reachable states.
-	var engine *forecast.Engine
-	if om != nil {
-		engine = forecast.NewEngine(ts, cfg.StationID, om, kp, lat, lon, staleAfter)
-	} else {
-		engine = forecast.NewEngine(ts, cfg.StationID, nil, nil, 0, 0, staleAfter)
-	}
+	engine := forecast.NewEngine(ts, engineCfg)
 
 	log.Println("Computing initial forecast...")
 	engine.Compute()
@@ -126,22 +121,52 @@ func main() {
 	go runScheduler(ctx, client, ts, engine, cfg)
 
 	// --- HTTP API ---
-	srv := api.NewServer(cfg.Port, engine, client, ts)
-	go func() {
-		if err := srv.Start(ctx); err != nil {
-			log.Printf("Server error: %v", err)
-		}
-	}()
+	addr := net.JoinHostPort(cfg.BindAddr, cfg.Port)
+	srv := api.NewServer(addr, engine, client, ts)
+	ln, err := srv.Listen()
+	if err != nil {
+		log.Fatalf("Cannot listen on %s: %v", addr, err)
+	}
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- srv.Serve(ctx, ln) }()
 
-	log.Printf("mycast running — forecast available at http://localhost:%s/forecast", cfg.Port)
+	log.Printf("mycast running — forecast available at http://%s/forecast", ln.Addr())
 
-	// Graceful shutdown on SIGINT/SIGTERM.
+	// Run until SIGINT/SIGTERM, or until the server dies on its own.
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
-	<-sig
-	log.Println("Shutting down...")
+	select {
+	case <-sig:
+		log.Println("Shutting down...")
+	case err := <-serveErr:
+		log.Fatalf("Server stopped unexpectedly: %v", err)
+	}
+
 	cancel()
-	time.Sleep(500 * time.Millisecond)
+	select {
+	case err := <-serveErr:
+		if err != nil {
+			log.Printf("Server shutdown: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		log.Println("Server did not stop in time")
+	}
+}
+
+// stationLocation resolves the station's IANA timezone, falling back to UTC
+// (with a warning) when it is unknown or unrecognised.
+func stationLocation(name string) *time.Location {
+	if name == "" {
+		log.Println("Warning: station timezone unknown — forecast days will follow UTC")
+		return time.UTC
+	}
+	loc, err := time.LoadLocation(name)
+	if err != nil {
+		log.Printf("Warning: unrecognised station timezone %q (%v) — forecast days will follow UTC", name, err)
+		return time.UTC
+	}
+	log.Printf("Forecast days follow the station's timezone, %s", loc)
+	return loc
 }
 
 // runScheduler periodically fetches the latest station reading, appends it to
@@ -168,15 +193,13 @@ func fetchAndUpdate(client *netatmo.Client, ts *store.TimeSeries, engine *foreca
 		return
 	}
 
-	obs := netatmo.Observation{
-		Timestamp:   cur.Timestamp,
-		Temperature: cur.OutdoorTemp,
-		Humidity:    cur.OutdoorHumidity,
-		WindSpeed:   cur.WindSpeed,
-		WindAngle:   cur.WindAngle,
-		GustSpeed:   cur.GustSpeed,
-		GustAngle:   cur.GustAngle,
-		Rain:        cur.Rain,
+	obs, ok := cur.Observation()
+	if !ok {
+		// Storing the zeroed outdoor fields would record a fake 0 °C / 0 %
+		// reading; leaving the gap lets the forecast (and its staleness
+		// signal) reflect that the station went quiet.
+		log.Println("Scheduler: outdoor module unavailable — skipping this reading")
+		return
 	}
 	ts.Append(obs)
 

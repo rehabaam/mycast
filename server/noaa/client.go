@@ -7,22 +7,30 @@ package noaa
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 )
 
-const kpForecastURL = "https://services.swpc.noaa.gov/products/noaa-planetary-k-index-forecast.json"
+const (
+	defaultKpForecastURL = "https://services.swpc.noaa.gov/products/noaa-planetary-k-index-forecast.json"
+
+	// maxResponseBytes caps how much of a response is read, so a broken or
+	// hostile upstream can't exhaust memory.
+	maxResponseBytes = 4 << 20
+)
 
 // Client queries NOAA SWPC. Unlike the Netatmo/Open-Meteo clients, it takes
 // no location — the Kp index is a single global geomagnetic activity value,
 // not location-specific.
 type Client struct {
 	http *http.Client
+	url  string
 }
 
 // NewClient returns a client for NOAA SWPC's public, unauthenticated API.
 func NewClient() *Client {
-	return &Client{http: &http.Client{Timeout: 10 * time.Second}}
+	return &Client{http: &http.Client{Timeout: 10 * time.Second}, url: defaultKpForecastURL}
 }
 
 // KpPoint is one 3-hour Kp index bucket.
@@ -36,7 +44,7 @@ type KpPoint struct {
 // filter to the time range they need — this returns everything NOAA
 // provides, past and future.
 func (c *Client) FetchKpForecast() ([]KpPoint, error) {
-	resp, err := c.http.Get(kpForecastURL)
+	resp, err := c.http.Get(c.url)
 	if err != nil {
 		return nil, fmt.Errorf("noaa kp forecast request: %w", err)
 	}
@@ -50,7 +58,7 @@ func (c *Client) FetchKpForecast() ([]KpPoint, error) {
 		TimeTag string  `json:"time_tag"`
 		Kp      float64 `json:"kp"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseBytes)).Decode(&raw); err != nil {
 		return nil, fmt.Errorf("noaa kp forecast: parse response: %w", err)
 	}
 	if len(raw) == 0 {

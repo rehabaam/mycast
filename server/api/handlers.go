@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 	"time"
 )
@@ -19,12 +20,12 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCurrent(w http.ResponseWriter, r *http.Request) {
-	cur, err := s.client.GetCurrent()
-	if err != nil {
-		writeError(w, http.StatusBadGateway, "failed to fetch station data: "+err.Error())
+	cur, ok := s.current.Latest()
+	if !ok {
+		writeError(w, http.StatusServiceUnavailable, "no station reading available yet")
 		return
 	}
-	writeJSON(w, http.StatusOK, cur)
+	writeJSON(w, http.StatusOK, newCurrentResponse(cur))
 }
 
 func (s *Server) handleForecast(w http.ResponseWriter, r *http.Request) {
@@ -44,7 +45,7 @@ func (s *Server) handleDebug(w http.ResponseWriter, r *http.Request) {
 		LastTimestamp  int64     `json:"last_timestamp,omitempty"`
 		SampleTemps    []float64 `json:"sample_temps_last_5"`
 	}
-	sum := summary{Count: len(obs)}
+	sum := summary{Count: len(obs), SampleTemps: []float64{}}
 	if len(obs) > 0 {
 		sum.FirstTimestamp = obs[0].Timestamp
 		sum.LastTimestamp = obs[len(obs)-1].Timestamp
@@ -59,11 +60,18 @@ func (s *Server) handleDebug(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, sum)
 }
 
+// writeJSON encodes v before writing anything, so an encoding failure can
+// still be reported as a 500 instead of a truncated 200.
 func writeJSON(w http.ResponseWriter, status int, v interface{}) {
+	body, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		log.Printf("api: encode response: %v", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte("{\"error\":\"internal error\"}\n"))
+		return
+	}
 	w.WriteHeader(status)
-	enc := json.NewEncoder(w)
-	enc.SetIndent("", "  ")
-	_ = enc.Encode(v)
+	_, _ = w.Write(append(body, '\n'))
 }
 
 func writeError(w http.ResponseWriter, status int, msg string) {

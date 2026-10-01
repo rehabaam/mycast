@@ -19,7 +19,9 @@ struct DayDetailView: View {
                 temperatureSection
                 precipitationSection
                 windSection
-                auroraSection
+                if let aurora = day.aurora {
+                    auroraSection(aurora)
+                }
             }
             .padding()
         }
@@ -43,8 +45,12 @@ struct DayDetailView: View {
                         .lineLimit(1)
                     HStack(spacing: 10) {
                         Text("Feels like \(day.temperature.apparentAvgC.formattedTemperature)")
-                        Label(day.sunrise.formatted(date: .omitted, time: .shortened), systemImage: "sunrise.fill")
-                        Label(day.sunset.formatted(date: .omitted, time: .shortened), systemImage: "sunset.fill")
+                        if let sunrise = day.sunrise {
+                            Label(sunrise.formatted(date: .omitted, time: .shortened), systemImage: "sunrise.fill")
+                        }
+                        if let sunset = day.sunset {
+                            Label(sunset.formatted(date: .omitted, time: .shortened), systemImage: "sunset.fill")
+                        }
                     }
                     .labelStyle(CompactLabelStyle())
                     .font(.subheadline)
@@ -175,16 +181,16 @@ struct DayDetailView: View {
         }
     }
 
-    private var auroraSection: some View {
+    private func auroraSection(_ aurora: AuroraForecast) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Aurora")
                 .font(.headline)
-            Text("\(Int(day.aurora.maxProbabilityPct))% chance of visibility overnight")
+            Text("\(Int(aurora.maxProbabilityPct))% chance of visibility overnight")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
-            if day.aurora.maxProbabilityPct > 0 {
-                Chart(day.aurora.hourly) { point in
+            if aurora.maxProbabilityPct > 0 {
+                Chart(aurora.hourly) { point in
                     BarMark(x: .value("Time", point.time), y: .value("Probability", point.probabilityPct))
                         .foregroundStyle(.purple)
                 }

@@ -27,8 +27,8 @@ struct DayForecastRow: View {
                 HStack(spacing: 8) {
                     Label(day.wind.cardinal, systemImage: "wind")
                     Label("\(Int(day.precipitation.probability * 100))%", systemImage: "drop.fill")
-                    if day.aurora.maxProbabilityPct > 0 {
-                        Label("\(Int(day.aurora.maxProbabilityPct))%", systemImage: "sparkles")
+                    if let aurora = day.aurora, aurora.maxProbabilityPct > 0 {
+                        Label("\(Int(aurora.maxProbabilityPct))%", systemImage: "sparkles")
                     }
                 }
                 .labelStyle(CompactLabelStyle())
