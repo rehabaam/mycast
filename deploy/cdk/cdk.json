@@ -21,6 +21,7 @@
     "fetchIntervalMin": 30,
     "openMeteoEnabled": true,
     "budgetLimitUsd": 50,
-    "killAtPercent": 80
+    "killAtPercent": 80,
+    "apiReservedConcurrency": 5
   }
 }

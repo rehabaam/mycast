@@ -74,7 +74,7 @@ Settings come from CDK context (`cdk.json`, or `-c name=value`):
 | `budgetEmail` | **required** | Where spending alerts go. `none` deploys without a spending guard. Passed at deploy time, never stored in the repo |
 | `budgetLimitUsd` | `50` | Monthly limit in USD (Budgets supports only USD) |
 | `killAtPercent` | `80` | Share of the limit, in actual spend, at which both functions are stopped |
-| `apiReservedConcurrency` | unset | A ceiling on how much the public API function can ever run |
+| `apiReservedConcurrency` | 5 | A ceiling on how much the public API function can ever run. If the deploy fails because the account's concurrency limit is too low (new accounts can have 10), unset it in `cdk.json` or ask AWS for a quota increase |
 | `ingestReservedConcurrency` | unset | Reserve concurrency for `Ingest`. Left off because a new account's low concurrency limit can make the deploy fail; overlap is prevented by the timeout, the schedule, and having no retries |
 
 ### 3. Authorise with Netatmo, once
