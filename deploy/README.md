@@ -57,8 +57,8 @@ aws ssm get-parameter --with-decryption --name /mycast/api-token --query Paramet
 ```bash
 cd deploy/cdk
 npm ci
-npx cdk bootstrap        # once per account and region
-npm run deploy           # builds the Go binaries, then cdk deploy
+npx cdk bootstrap aws://<ACCOUNT_ID>/<REGION> -c budgetEmail=none   # once per account and region
+npm run deploy -- -c budgetEmail=you@example.com   # builds the Go binaries, then cdk deploy
 ```
 
 `cdk deploy` prints the outputs you need: `ApiUrl`, `TableName`, `IngestFunctionName` and `AuthorizeCommand`.
@@ -71,6 +71,10 @@ Settings come from CDK context (`cdk.json`, or `-c name=value`):
 | `historyDays` | `7` | Days of hourly history to keep (2–30) |
 | `fetchIntervalMin` | `30` | Minutes between runs (1–1440) |
 | `openMeteoEnabled` | `true` | Blend in the ECMWF forecast |
+| `budgetEmail` | **required** | Where spending alerts go. `none` deploys without a spending guard. Passed at deploy time, never stored in the repo |
+| `budgetLimitUsd` | `50` | Monthly limit in USD (Budgets supports only USD) |
+| `killAtPercent` | `80` | Share of the limit, in actual spend, at which both functions are stopped |
+| `apiReservedConcurrency` | unset | A ceiling on how much the public API function can ever run |
 | `ingestReservedConcurrency` | unset | Reserve concurrency for `Ingest`. Left off because a new account's low concurrency limit can make the deploy fail; overlap is prevented by the timeout, the schedule, and having no retries |
 
 ### 3. Authorise with Netatmo, once
@@ -149,7 +153,7 @@ aws cloudformation describe-stacks --stack-name mycast-github-oidc \
 
 The role trusts exactly `repo:<owner>/<repo>:environment:production`. A fork, a pull request, or a job on another branch has a different subject and is refused.
 
-**2. Bootstrap CDK** (once per account and region), as in step 2 of the manual deploy: `cd deploy/cdk && npx cdk bootstrap`. Create the three Parameter Store secrets (step 1 above) too, if you have not.
+**2. Bootstrap CDK** (once per account and region), as in step 2 of the manual deploy: `cd deploy/cdk && npm ci && npx cdk bootstrap aws://<ACCOUNT_ID>/<REGION> -c budgetEmail=none`. (The CDK app refuses to run without a `budgetEmail`, and bootstrapping runs it; `none` is fine here, since bootstrapping creates no budget.) Create the three Parameter Store secrets (step 1 above) too, if you have not.
 
 **3. Configure GitHub** (repository Settings):
 
@@ -157,9 +161,10 @@ The role trusts exactly `repo:<owner>/<repo>:environment:production`. A fork, a 
 |---|---|
 | Environments → New `production` | **Required reviewers**: yourself. **Deployment branches**: selected branches, `main` only |
 | Secrets and variables → Actions → *Variables* | `AWS_DEPLOY_ROLE_ARN` = the role ARN from step 1; `AWS_REGION` = e.g. `eu-north-1` |
+| Environments → `production` → *Environment secrets* | `BUDGET_EMAIL` = the address for spending alerts. A secret, so it is masked in the public logs; **the deploy fails without it** (see "Spending guard") |
 | Branches → protect `main` | require the **Test** check to pass before merging |
 
-These are *variables*, not secrets: neither value is sensitive, and the workflow needs no secret at all. The Netatmo secret and the API token stay in Parameter Store, and the Netatmo OAuth step (`mycast-auth`) remains a local, manual one.
+The role ARN and region are *variables* because neither is sensitive. The only secret GitHub holds is the alert email address. The Netatmo secret and the API token stay in Parameter Store, and the Netatmo OAuth step (`mycast-auth`) remains a local, manual one.
 
 **4. Push to `main`.** The Test job runs, the Deploy job waits for your approval in the Actions tab, then deploys.
 
@@ -173,6 +178,50 @@ Be clear-eyed about where the protection is:
 - **To narrow it further**, bootstrap with a scoped execution policy (`cdk bootstrap --cloudformation-execution-policies <ARN>`) covering only DynamoDB, Lambda, Logs, Scheduler and the IAM roles this stack creates. That is not provided here because it could not be tested against a real account.
 - **Third-party actions are pinned to commit SHAs**, so a re-pointed tag can't change what runs. Update them deliberately.
 - **Local `cdk deploy` still works** and bypasses all of this. Once the pipeline runs, consider removing long-lived local keys for this account.
+
+## Spending guard
+
+**AWS has no hard spending cap.** What this stack has instead is a budget that warns you early and an automatic kill switch, which together bound the damage to roughly the limit plus a little overshoot.
+
+```mermaid
+flowchart LR
+    COST["AWS cost data<br/>updated a few times a day"] --> BUD["Budget<br/>$50 / month"]
+    BUD -- "50% actual" --> MAIL["email"]
+    BUD -- "100% forecast" --> MAIL
+    BUD -- "100% actual" --> MAIL
+    BUD -- "80% actual" --> MAIL
+    BUD -- "80% actual" --> SNS["SNS topic"]
+    SNS --> KILL["Kill-switch Lambda"]
+    KILL --> ING["Ingest: concurrency 0"]
+    KILL --> API["Api: concurrency 0"]
+```
+
+| Alert | When | Goes to |
+|---|---|---|
+| Early warning | 50% of the limit spent | email |
+| **Kill switch** | **80% of the limit spent ($40)** | email + the kill-switch function |
+| Limit reached | 100% spent | email |
+| Forecast | spend is forecast to pass 100% | email |
+
+The kill switch sets reserved concurrency to **0** on the ingest and API functions, which makes Lambda refuse to run them. It is allowed to do exactly that and nothing else (`lambda:PutFunctionConcurrency`, on those two functions). The app then gets errors and shows no data, which is the point.
+
+**After it fires**, look at what happened (Cost Explorer, the functions' logs), then reset:
+
+```bash
+# the exact commands are printed as the ResetCommand stack output
+aws lambda delete-function-concurrency --function-name <IngestFunctionName>
+aws lambda delete-function-concurrency --function-name <ApiFunctionName>
+```
+
+Resetting is manual on purpose. To check the wiring without stopping anything, invoke the kill switch with `{"dryRun": true}`.
+
+**What this does not do**
+- **It isn't instant.** AWS cost data lags by hours, so the switch is set at 80% to leave room, not at 100%. A very fast runaway could overshoot.
+- **The limit is in USD.** Budgets support no other currency. $50 stays under €50 as long as the euro is worth at least a dollar.
+- **It guards these functions only.** Anything else you run in the account is outside it.
+- **Realistic exposure is tiny.** Normal spend is about $0.03 a month. The only path an outsider can drive is the public API URL: requests without the token are rejected immediately and are not logged, and `apiReservedConcurrency` puts a ceiling on how much it can run at all.
+
+The alert address is passed at deploy time as `budgetEmail`. The CDK app **refuses to deploy without it**, so a missing secret can't leave you unprotected by accident; `-c budgetEmail=none` is the explicit opt-out.
 
 ## How the API behaves here
 

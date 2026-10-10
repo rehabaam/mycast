@@ -2,9 +2,12 @@ import * as path from 'path';
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
+import * as budgets from 'aws-cdk-lib/aws-budgets';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as logs from 'aws-cdk-lib/aws-logs';
+import * as sns from 'aws-cdk-lib/aws-sns';
+import * as subs from 'aws-cdk-lib/aws-sns-subscriptions';
 import * as scheduler from 'aws-cdk-lib/aws-scheduler';
 
 export interface MycastStackProps extends cdk.StackProps {
@@ -23,6 +26,28 @@ export interface MycastStackProps extends cdk.StackProps {
    * a 30 min period and no retries.
    */
   readonly ingestReservedConcurrency?: number;
+
+  /**
+   * Reserve this much concurrency for the API function: a ceiling on how much
+   * it can ever run, whatever is thrown at its public URL. Off by default for
+   * the same account-limit reason as the ingest function.
+   */
+  readonly apiReservedConcurrency?: number;
+
+  /**
+   * Monthly spending guard. Omit `email` to deploy without one (the CDK app
+   * refuses to unless you say so explicitly). AWS has no hard spending cap:
+   * this is a budget that emails you early and, at `killAtPercent` of the
+   * limit, stops both functions automatically.
+   */
+  readonly spendingGuard?: {
+    /** Where the alerts go. Passed at deploy time, never committed. */
+    readonly email: string;
+    /** Monthly limit in USD (Budgets only supports USD). */
+    readonly limitUsd: number;
+    /** Share of the limit, in percent of actual spend, that stops the functions. */
+    readonly killAtPercent: number;
+  };
 
   /** Directory holding ingest-lambda/ and api-lambda/ builds (deploy/build.sh). */
   readonly distDir?: string;
@@ -92,6 +117,7 @@ export class MycastStack extends cdk.Stack {
       code: lambda.Code.fromAsset(path.join(dist, 'api-lambda')),
       memorySize: 128,
       timeout: cdk.Duration.seconds(10),
+      reservedConcurrentExecutions: props.apiReservedConcurrency,
       logGroup: logGroup('Api'),
     });
 
@@ -143,6 +169,10 @@ export class MycastStack extends cdk.Stack {
       },
     });
 
+    if (props.spendingGuard) {
+      this.addSpendingGuard(props.spendingGuard, [this.ingestFunction, this.apiFunction]);
+    }
+
     new cdk.CfnOutput(this, 'ApiUrl', { value: this.apiUrl.url, description: 'Base URL for the app (MyCastAPIBaseURL)' });
     new cdk.CfnOutput(this, 'TableName', { value: this.table.tableName });
     new cdk.CfnOutput(this, 'IngestFunctionName', {
@@ -152,6 +182,92 @@ export class MycastStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'AuthorizeCommand', {
       value: `cd server && go run ./cmd/mycast-auth -table ${this.table.tableName}`,
       description: 'Run once, locally, to authorise mycast with Netatmo',
+    });
+  }
+
+  /**
+   * A monthly budget with early-warning emails, and an automatic kill switch.
+   *
+   * Budgets cannot enforce a ceiling by themselves, and their cost data lags
+   * by hours, so the switch is set below the limit to leave room for that lag.
+   * It sets reserved concurrency to 0 on the given functions; undoing that is
+   * deliberately manual (see the ResetCommand output).
+   */
+  private addSpendingGuard(
+    guard: NonNullable<MycastStackProps['spendingGuard']>,
+    targets: lambda.Function[],
+  ): void {
+    const topic = new sns.Topic(this, 'SpendingAlerts', { displayName: 'mycast spending kill switch' });
+    topic.addToResourcePolicy(
+      new iam.PolicyStatement({
+        sid: 'AllowBudgetsToPublish',
+        principals: [new iam.ServicePrincipal('budgets.amazonaws.com')],
+        actions: ['sns:Publish'],
+        resources: [topic.topicArn],
+        conditions: {
+          StringEquals: { 'aws:SourceAccount': this.account },
+          ArnLike: { 'aws:SourceArn': `arn:${this.partition}:budgets::${this.account}:*` },
+        },
+      }),
+    );
+
+    const killSwitch = new lambda.Function(this, 'KillSwitch', {
+      runtime: lambda.Runtime.PYTHON_3_13,
+      architecture: lambda.Architecture.ARM_64,
+      handler: 'index.handler',
+      description: 'mycast: stop the functions when the monthly budget is nearly spent',
+      code: lambda.Code.fromAsset(path.join(__dirname, '..', 'lambda', 'kill-switch')),
+      timeout: cdk.Duration.seconds(30),
+      environment: { TARGETS: targets.map((f) => f.functionName).join(',') },
+      logGroup: new logs.LogGroup(this, 'KillSwitchLogs', {
+        retention: logs.RetentionDays.TWO_WEEKS,
+        removalPolicy: cdk.RemovalPolicy.DESTROY,
+      }),
+    });
+    // The only thing it can do, to only these functions.
+    killSwitch.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ['lambda:PutFunctionConcurrency'],
+        resources: targets.map((f) => f.functionArn),
+      }),
+    );
+    topic.addSubscription(new subs.LambdaSubscription(killSwitch));
+
+    const email = { subscriptionType: 'EMAIL', address: guard.email };
+    const notification = (
+      type: 'ACTUAL' | 'FORECASTED',
+      threshold: number,
+      subscribers: { subscriptionType: string; address: string }[],
+    ): budgets.CfnBudget.NotificationWithSubscribersProperty => ({
+      notification: {
+        notificationType: type,
+        comparisonOperator: 'GREATER_THAN',
+        threshold,
+        thresholdType: 'PERCENTAGE',
+      },
+      subscribers,
+    });
+
+    new budgets.CfnBudget(this, 'MonthlyBudget', {
+      budget: {
+        budgetName: 'mycast-monthly',
+        budgetType: 'COST',
+        timeUnit: 'MONTHLY',
+        budgetLimit: { amount: guard.limitUsd, unit: 'USD' },
+      },
+      notificationsWithSubscribers: [
+        notification('ACTUAL', 50, [email]),
+        notification('ACTUAL', guard.killAtPercent, [email, { subscriptionType: 'SNS', address: topic.topicArn }]),
+        notification('ACTUAL', 100, [email]),
+        notification('FORECASTED', 100, [email]),
+      ],
+    });
+
+    new cdk.CfnOutput(this, 'ResetCommand', {
+      description: 'Run after the kill switch has fired, once you have checked why',
+      value: targets
+        .map((f) => `aws lambda delete-function-concurrency --function-name ${f.functionName}`)
+        .join(' && '),
     });
   }
 }

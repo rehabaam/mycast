@@ -3,3 +3,5 @@ cdk.out/
 dist/
 *.js
 *.d.ts
+__pycache__/
+*.pyc

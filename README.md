@@ -4,7 +4,7 @@ A personal weather forecasting service written in Go that fetches live data from
 
 This repo is a monorepo: the Go backend lives in [`server/`](server/) (documented below) and a SwiftUI iOS/macOS client that consumes its API lives in [`app/`](app/).
 
-The backend runs two ways: as a single process on your machine (this page), or as two AWS Lambda functions over a DynamoDB table for about 3 cents a month — see [deploy/README.md](deploy/README.md), which also covers deploying from GitHub Actions with OIDC (no stored AWS keys). [ARCHITECTURE.md](ARCHITECTURE.md) has diagrams of both.
+The backend runs two ways: as a single process on your machine (this page), or as two AWS Lambda functions over a DynamoDB table for about 3 cents a month — see [deploy/README.md](deploy/README.md), which also covers deploying from GitHub Actions with OIDC (no stored AWS keys) and the automatic spending guard. [ARCHITECTURE.md](ARCHITECTURE.md) has diagrams of both.
 
 ---
 

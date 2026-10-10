@@ -156,10 +156,29 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	}
 }
 
+// statusRecorder remembers the status code a handler wrote.
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (r *statusRecorder) WriteHeader(code int) {
+	r.status = code
+	r.ResponseWriter.WriteHeader(code)
+}
+
+// loggingMiddleware logs one line per request, except those rejected for a
+// missing or wrong token. The URL is public, so those are the requests anyone
+// on the internet can generate at will, and a log line for each would let
+// them run up a log bill for free.
 func loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		next.ServeHTTP(w, r)
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(rec, r)
+		if rec.status == http.StatusUnauthorized {
+			return
+		}
 		log.Printf("%s %s %s", r.Method, r.URL.Path, time.Since(start))
 	})
 }

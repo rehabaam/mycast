@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -445,3 +447,40 @@ func TestServerServesAnyForecastSource(t *testing.T) {
 type nopObs struct{}
 
 func (nopObs) All() []netatmo.Observation { return nil }
+
+// --- logging ---
+
+func captureLog(t *testing.T) *strings.Builder {
+	t.Helper()
+	var buf strings.Builder
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	return &buf
+}
+
+func TestRejectedRequestsAreNotLogged(t *testing.T) {
+	s := newProtectedServer(t, "s3cret-token")
+	logs := captureLog(t)
+
+	for i := 0; i < 5; i++ {
+		doAuth(t, s, "/forecast", "")
+		doAuth(t, s, "/forecast", "Bearer wrong")
+	}
+
+	if logs.Len() != 0 {
+		t.Errorf("10 unauthorised requests wrote %d bytes of log: %q", logs.Len(), logs.String())
+	}
+}
+
+func TestAcceptedAndOtherFailedRequestsAreStillLogged(t *testing.T) {
+	s := newProtectedServer(t, "s3cret-token")
+	logs := captureLog(t)
+
+	doAuth(t, s, "/health", "Bearer s3cret-token")
+	doAuth(t, s, "/nope", "Bearer s3cret-token") // 404, but authorised
+
+	got := logs.String()
+	if !strings.Contains(got, "GET /health") || !strings.Contains(got, "GET /nope") {
+		t.Errorf("log = %q, want a line for each authorised request", got)
+	}
+}

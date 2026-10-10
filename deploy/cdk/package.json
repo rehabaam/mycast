@@ -5,7 +5,7 @@
   "description": "AWS CDK app deploying mycast as two Lambda functions, a DynamoDB table and a schedule",
   "scripts": {
     "build:go": "../build.sh",
-    "test": "node --require ts-node/register --test test/*.test.ts",
+    "test": "node --require ts-node/register --test test/*.test.ts && python3 -m unittest discover -s test -p 'test_*.py'",
     "synth": "cdk synth",
     "diff": "cdk diff",
     "deploy": "npm run build:go && cdk deploy"

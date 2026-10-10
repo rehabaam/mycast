@@ -123,3 +123,95 @@ test('outputs expose the URL, table, ingest function and authorise command', () 
   const out = synth().toJSON().Outputs;
   assert.ok(out.ApiUrl && out.TableName && out.AuthorizeCommand && out.IngestFunctionName);
 });
+
+// --- spending guard ---
+
+const guard = { email: 'alerts@example.com', limitUsd: 50, killAtPercent: 80 };
+
+test('without a spending guard no budget or kill switch is created', () => {
+  const t = synth();
+  t.resourceCountIs('AWS::Budgets::Budget', 0);
+  t.resourceCountIs('AWS::SNS::Topic', 0);
+});
+
+test('the budget is $50 a month with early warnings and a kill trigger', () => {
+  const t = synth({ spendingGuard: guard });
+  t.hasResourceProperties('AWS::Budgets::Budget', {
+    Budget: {
+      BudgetName: 'mycast-monthly',
+      BudgetType: 'COST',
+      TimeUnit: 'MONTHLY',
+      BudgetLimit: { Amount: 50, Unit: 'USD' },
+    },
+  });
+
+  const budget = Object.values(t.findResources('AWS::Budgets::Budget'))[0] as any;
+  const rows = budget.Properties.NotificationsWithSubscribers.map((n: any) => ({
+    type: n.Notification.NotificationType,
+    at: n.Notification.Threshold,
+    kinds: n.Subscribers.map((x: any) => x.SubscriptionType).sort(),
+  }));
+  assert.deepEqual(rows, [
+    { type: 'ACTUAL', at: 50, kinds: ['EMAIL'] },
+    { type: 'ACTUAL', at: 80, kinds: ['EMAIL', 'SNS'] },
+    { type: 'ACTUAL', at: 100, kinds: ['EMAIL'] },
+    { type: 'FORECASTED', at: 100, kinds: ['EMAIL'] },
+  ]);
+  // Only the 80 % alert is wired to the kill switch.
+  const snsRows = rows.filter((r: any) => r.kinds.includes('SNS'));
+  assert.equal(snsRows.length, 1);
+  assert.equal(snsRows[0].at, 80);
+});
+
+test('the kill switch can change concurrency on the two functions and nothing else', () => {
+  const t = synth({ spendingGuard: guard });
+  const policies = Object.entries(t.findResources('AWS::IAM::Policy'))
+    .filter(([id]) => id.includes('KillSwitch'))
+    .flatMap(([, p]: [string, any]) => p.Properties.PolicyDocument.Statement as any[]);
+
+  const actions = policies.flatMap((s) => ([] as string[]).concat(s.Action));
+  assert.deepEqual(actions, ['lambda:PutFunctionConcurrency']);
+
+  const resources = policies.flatMap((s) => ([] as any[]).concat(s.Resource));
+  assert.equal(resources.length, 2, 'exactly the ingest and API functions');
+  assert.ok(!JSON.stringify(resources).includes('*'), 'no wildcard resource');
+});
+
+test('the kill switch targets both functions and is not mixed up with them', () => {
+  const t = synth({ spendingGuard: guard });
+  const fns = t.findResources('AWS::Lambda::Function', { Properties: { Runtime: 'python3.13' } });
+  assert.equal(Object.keys(fns).length, 1);
+  const env = JSON.stringify((Object.values(fns)[0] as any).Properties.Environment.Variables.TARGETS);
+  assert.ok(env.includes('Ingest') && env.includes('Api'), env);
+});
+
+test('only AWS Budgets, in this account, may publish to the alert topic', () => {
+  const t = synth({ spendingGuard: guard });
+  t.hasResourceProperties('AWS::SNS::TopicPolicy', {
+    PolicyDocument: {
+      Statement: Match.arrayWith([
+        Match.objectLike({
+          Principal: { Service: 'budgets.amazonaws.com' },
+          Action: 'sns:Publish',
+          Condition: Match.objectLike({ StringEquals: Match.anyValue(), ArnLike: Match.anyValue() }),
+        }),
+      ]),
+    },
+  });
+});
+
+test('the email address is not baked into anything but the budget', () => {
+  const t = synth({ spendingGuard: guard });
+  const json = JSON.stringify(t.toJSON());
+  const occurrences = json.split('alerts@example.com').length - 1;
+  assert.equal(occurrences, 4, 'one per notification, in the budget only');
+  const outside = JSON.stringify({ ...t.toJSON(), Resources: Object.fromEntries(
+    Object.entries(t.toJSON().Resources).filter(([, r]: [string, any]) => r.Type !== 'AWS::Budgets::Budget')) });
+  assert.ok(!outside.includes('alerts@example.com'));
+});
+
+test('the reset command and an API concurrency ceiling are available', () => {
+  const t = synth({ spendingGuard: guard, apiReservedConcurrency: 3 });
+  assert.ok(t.toJSON().Outputs.ResetCommand);
+  t.hasResourceProperties('AWS::Lambda::Function', { ReservedConcurrentExecutions: 3 });
+});

@@ -68,7 +68,8 @@ jobs:
           npm ci
           npm test
           ../build.sh
-          npx cdk synth --quiet
+          # A throwaway address: this only checks that the stack synthesises.
+          npx cdk synth --quiet -c budgetEmail=ci@example.invalid
 
   deploy:
     name: Deploy
@@ -115,7 +116,12 @@ jobs:
 
       - name: Build and deploy
         working-directory: deploy/cdk
+        env:
+          # Where the spending alerts go. A secret, so it is masked in the
+          # (public) logs and never committed. If it is unset the CDK app
+          # refuses to deploy rather than leave the account without a guard.
+          BUDGET_EMAIL: ${{ secrets.BUDGET_EMAIL }}
         run: |
           npm ci
           ../build.sh
-          npx cdk deploy Mycast --require-approval never --ci
+          npx cdk deploy Mycast --require-approval never --ci -c budgetEmail="$BUDGET_EMAIL"
