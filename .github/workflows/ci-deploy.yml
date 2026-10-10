@@ -71,6 +71,13 @@ jobs:
           # A throwaway address: this only checks that the stack synthesises.
           npx cdk synth --quiet -c budgetEmail=ci@example.invalid
 
+      # The deploy job below is skipped while this variable is empty. Say so,
+      # instead of leaving a grey "skipped" icon to be puzzled over.
+      - name: Explain why deploy will be skipped
+        if: github.event_name != 'pull_request' && vars.AWS_DEPLOY_ROLE_ARN == ''
+        run: |
+          echo "::notice title=Deploy skipped::The repository variable AWS_DEPLOY_ROLE_ARN is not set. It must be a REPOSITORY variable (Settings > Secrets and variables > Actions > Variables); a variable defined only on the production environment is not visible to the job-level condition."
+
   deploy:
     name: Deploy
     needs: test

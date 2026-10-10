@@ -164,7 +164,7 @@ The role trusts exactly `repo:<owner>/<repo>:environment:production`. A fork, a 
 | Environments → `production` → *Environment secrets* | `BUDGET_EMAIL` = the address for spending alerts. A secret, so it is masked in the public logs; **the deploy fails without it** (see "Spending guard") |
 | Branches → protect `main` | require the **Test** check to pass before merging |
 
-The role ARN and region are *variables* because neither is sensitive. The only secret GitHub holds is the alert email address. The Netatmo secret and the API token stay in Parameter Store, and the Netatmo OAuth step (`mycast-auth`) remains a local, manual one.
+The role ARN and region are *variables* because neither is sensitive. Create them as **repository** variables, not as variables of the `production` environment: the deploy job's `if:` can only see repository variables, so one defined only on the environment makes the job skip itself. (The run says so in its summary.) The only secret GitHub holds is the alert email address. The Netatmo secret and the API token stay in Parameter Store, and the Netatmo OAuth step (`mycast-auth`) remains a local, manual one.
 
 **4. Push to `main`.** The Test job runs, the Deploy job waits for your approval in the Actions tab, then deploys.
 
