@@ -1,0 +1,10 @@
+{
+  "app": "npx ts-node --prefer-ts-exts bin/mycast.ts",
+  "watch": { "include": ["**"], "exclude": ["README.md", "cdk*.json", "**/*.d.ts", "**/*.js", "tsconfig.json", "package*.json", "node_modules", "test"] },
+  "context": {
+    "ssmPrefix": "/mycast/",
+    "historyDays": 7,
+    "fetchIntervalMin": 30,
+    "openMeteoEnabled": true
+  }
+}

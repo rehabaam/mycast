@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Bounds enforced on numeric settings.
@@ -57,16 +58,27 @@ type Config struct {
 	OpenMeteoEnabled bool
 }
 
+// minStaleAfter is the shortest staleness window, whatever the polling
+// interval. Staleness follows the outdoor module's own measurement time, and
+// Netatmo modules only report about every ten minutes, so it can't be tighter
+// than a few reporting periods without flagging a healthy station.
+const minStaleAfter = 30 * time.Minute
+
+// StaleAfter is how long the station may go without delivering a new
+// measurement before forecasts and readings are flagged stale: twice the
+// polling interval, but never less than 30 minutes.
+func (c *Config) StaleAfter() time.Duration {
+	return max(2*time.Duration(c.FetchIntervalMin)*time.Minute, minStaleAfter)
+}
+
 // Load reads configuration from the environment (after loading ./.env, if
 // present). A setting that is present but invalid is an error rather than
 // being silently replaced by its default.
 func Load() (*Config, error) {
 	loadDotEnv(".env")
 
-	tokenFile, err := defaultTokenFile()
-	if err != nil {
-		return nil, err
-	}
+	var err error
+	tokenFile := defaultTokenFile()
 	if v := os.Getenv("TOKEN_FILE"); v != "" {
 		if tokenFile, err = expandHome(v); err != nil {
 			return nil, fmt.Errorf("TOKEN_FILE: %w", err)
@@ -105,12 +117,15 @@ func Load() (*Config, error) {
 	return cfg, nil
 }
 
-func defaultTokenFile() (string, error) {
+// defaultTokenFile is ~/.mycast/tokens.json, or "" when there is no home
+// directory (as in a serverless runtime, where the token lives in a database
+// instead). Code that needs a token file checks for "".
+func defaultTokenFile() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return "", fmt.Errorf("cannot locate home directory for the default token file (set TOKEN_FILE): %w", err)
+		return ""
 	}
-	return filepath.Join(home, ".mycast", "tokens.json"), nil
+	return filepath.Join(home, ".mycast", "tokens.json")
 }
 
 // expandHome resolves a leading "~" the way a shell would; the environment

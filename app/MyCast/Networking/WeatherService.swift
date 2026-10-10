@@ -10,6 +10,7 @@ import Foundation
 enum WeatherServiceError: LocalizedError {
     case invalidURL
     case invalidResponse
+    case unauthorized
     case serverError(Int)
 
     var errorDescription: String? {
@@ -18,6 +19,8 @@ enum WeatherServiceError: LocalizedError {
             return "The weather service URL is invalid."
         case .invalidResponse:
             return "Received an unexpected response from the weather service."
+        case .unauthorized:
+            return "The weather service rejected the API token. Check MYCAST_API_TOKEN in Config/Secrets.xcconfig."
         case .serverError(let statusCode):
             return "The weather service returned an error (status \(statusCode))."
         }
@@ -30,7 +33,24 @@ struct WeatherService {
     static let baseURLInfoKey = "MyCastAPIBaseURL"
     static let fallbackBaseURL = URL(string: "http://localhost:8080")!
 
+    /// Info.plist key holding the bearer token a deployed server requires.
+    /// Both values come from build settings (Config/MyCast.xcconfig, with
+    /// local overrides in the git-ignored Config/Secrets.xcconfig).
+    static let apiTokenInfoKey = "MyCastAPIToken"
+
     var baseURL: URL = Self.configuredBaseURL()
+
+    /// Sent as `Authorization: Bearer ...` when present. A local server
+    /// started without a token needs none.
+    var apiToken: String? = Self.configuredAPIToken()
+
+    /// The token from the bundle, or nil when none is configured. An
+    /// unexpanded "$(MYCAST_API_TOKEN)" counts as none.
+    static func configuredAPIToken(bundle: Bundle = .main) -> String? {
+        guard let value = bundle.object(forInfoDictionaryKey: apiTokenInfoKey) as? String else { return nil }
+        let token = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return token.isEmpty || token.hasPrefix("$(") ? nil : token
+    }
 
     static func configuredBaseURL(bundle: Bundle = .main) -> URL {
         guard let string = bundle.object(forInfoDictionaryKey: baseURLInfoKey) as? String,
@@ -49,15 +69,27 @@ struct WeatherService {
         return try JSONDecoder.currentWeather.decode(CurrentWeather.self, from: data)
     }
 
+    /// The request for `url`, with the bearer token attached when configured.
+    func request(for url: URL) -> URLRequest {
+        var request = URLRequest(url: url)
+        if let apiToken {
+            request.setValue("Bearer \(apiToken)", forHTTPHeaderField: "Authorization")
+        }
+        return request
+    }
+
     private func get(_ path: String) async throws -> Data {
         guard let url = URL(string: path, relativeTo: baseURL) else {
             throw WeatherServiceError.invalidURL
         }
 
-        let (data, response) = try await URLSession.shared.data(from: url)
+        let (data, response) = try await URLSession.shared.data(for: request(for: url))
 
         guard let httpResponse = response as? HTTPURLResponse else {
             throw WeatherServiceError.invalidResponse
+        }
+        if httpResponse.statusCode == 401 {
+            throw WeatherServiceError.unauthorized
         }
         guard (200..<300).contains(httpResponse.statusCode) else {
             throw WeatherServiceError.serverError(httpResponse.statusCode)

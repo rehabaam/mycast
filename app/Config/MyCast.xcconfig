@@ -1,0 +1,12 @@
+// Build settings that vary per deployment. These feed Info.plist
+// (MyCastAPIBaseURL, MyCastAPIToken), so the address and the token of the
+// server are not in Swift source.
+//
+// To point the app at a deployed server, copy Secrets.xcconfig.example to
+// Secrets.xcconfig (which is not committed) and edit it.
+
+// "//" starts a comment in an xcconfig, so URLs are written http:/$()/host.
+MYCAST_API_BASE_URL = http:/$()/localhost:8080
+MYCAST_API_TOKEN =
+
+#include? "Secrets.xcconfig"

@@ -1,4 +1,4 @@
-package main
+package ingest
 
 import (
 	"errors"
@@ -93,7 +93,7 @@ func TestTickRecordsTheLiveReadingAndMarksTheStationAsReporting(t *testing.T) {
 	latest, ts, engine := newTickFixtures()
 	src := &fakeSource{cur: liveReading(0)}
 
-	fetchAndUpdate(src, latest, ts, engine, tickNow)
+	Tick(src, latest, ts, engine, tickNow)
 
 	got, ok := byHour(ts)[hourAt(10).Unix()]
 	if !ok || got.Temperature != 14 || got.Humidity != 70 || got.WindSpeed != 6 {
@@ -116,7 +116,7 @@ func TestTickDoesNotDoubleCountRain(t *testing.T) {
 	// does the rolling sum measured at 10:03.
 	src := &fakeSource{cur: liveReading(0.5), hist: []netatmo.Observation{historyPoint(9, 13, 0.5)}}
 
-	fetchAndUpdate(src, latest, ts, engine, tickNow)
+	Tick(src, latest, ts, engine, tickNow)
 
 	if got := totalRain(ts); got != 0.5 {
 		t.Errorf("total rain in the store = %v mm, want 0.5 (counted once)", got)
@@ -143,7 +143,7 @@ func TestTickCorrectsCompletedHoursButNotTheHourInProgress(t *testing.T) {
 			historyPoint(10, 99, 9.9), // the hour still in progress: must be ignored
 		},
 	}
-	fetchAndUpdate(src, latest, ts, engine, tickNow)
+	Tick(src, latest, ts, engine, tickNow)
 
 	b := byHour(ts)
 	if got := b[hourAt(9).Unix()]; got.Rain != 0.6 || got.Temperature != 13 {
@@ -159,7 +159,7 @@ func TestTickCorrectsCompletedHoursButNotTheHourInProgress(t *testing.T) {
 	if src.historyCalls != 1 {
 		t.Fatalf("history fetched %d times, want once", src.historyCalls)
 	}
-	if want := tickNow.Add(-reconcileWindow); !src.histFrom.Equal(want) || !src.histTo.Equal(tickNow) {
+	if want := tickNow.Add(-ReconcileWindow); !src.histFrom.Equal(want) || !src.histTo.Equal(tickNow) {
 		t.Errorf("history window = %v..%v, want %v..%v", src.histFrom, src.histTo, want, tickNow)
 	}
 }
@@ -168,7 +168,7 @@ func TestTickKeepsTheLiveReadingWhenHistoryFails(t *testing.T) {
 	latest, ts, engine := newTickFixtures()
 	src := &fakeSource{cur: liveReading(0), histErr: errors.New("netatmo history down")}
 
-	fetchAndUpdate(src, latest, ts, engine, tickNow)
+	Tick(src, latest, ts, engine, tickNow)
 
 	if _, ok := byHour(ts)[hourAt(10).Unix()]; !ok {
 		t.Error("live reading was dropped because the history refresh failed")
@@ -185,7 +185,7 @@ func TestTickSkipsAnUnavailableOutdoorModule(t *testing.T) {
 	cur.OutdoorTemp, cur.OutdoorHumidity = 0, 0
 	src := &fakeSource{cur: cur}
 
-	fetchAndUpdate(src, latest, ts, engine, tickNow)
+	Tick(src, latest, ts, engine, tickNow)
 
 	if ts.Len() != 0 {
 		t.Errorf("store has %d observations, want none (no fake 0 °C reading)", ts.Len())
@@ -202,7 +202,7 @@ func TestTickLeavesTheStoreAloneWhenTheFetchFails(t *testing.T) {
 	latest, ts, engine := newTickFixtures()
 	src := &fakeSource{curErr: errors.New("netatmo down")}
 
-	fetchAndUpdate(src, latest, ts, engine, tickNow)
+	Tick(src, latest, ts, engine, tickNow)
 
 	if ts.Len() != 0 || !ts.UpdatedAt().IsZero() || src.historyCalls != 0 {
 		t.Errorf("a failed fetch changed state: len=%d updated=%v historyCalls=%d", ts.Len(), ts.UpdatedAt(), src.historyCalls)
@@ -221,7 +221,7 @@ func TestTickKeepsLiveWindWhenHistoryHasNoWindForTheHour(t *testing.T) {
 	})
 	src := &fakeSource{cur: liveReading(0), hist: []netatmo.Observation{historyWithoutWind(9, 13, 0.6)}}
 
-	fetchAndUpdate(src, latest, ts, engine, tickNow)
+	Tick(src, latest, ts, engine, tickNow)
 
 	got := byHour(ts)[hourAt(9).Unix()]
 	if got.WindSpeed != 14 || got.WindAngle != 220 {
@@ -240,7 +240,7 @@ func TestTickDoesNotRefreshStalenessForAQuietOutdoorModule(t *testing.T) {
 	quiet := liveReading(0)
 	src := &fakeSource{cur: quiet}
 
-	fetchAndUpdate(src, latest, ts, engine, tickNow)
+	Tick(src, latest, ts, engine, tickNow)
 	first := ts.UpdatedAt()
 	if first.IsZero() {
 		t.Fatal("first reading did not mark the station as reporting")
@@ -252,7 +252,7 @@ func TestTickDoesNotRefreshStalenessForAQuietOutdoorModule(t *testing.T) {
 	again := *quiet
 	again.Timestamp += 30 * 60
 	src.cur = &again
-	fetchAndUpdate(src, latest, ts, engine, tickNow.Add(30*time.Minute))
+	Tick(src, latest, ts, engine, tickNow.Add(30*time.Minute))
 
 	if got := ts.UpdatedAt(); !got.Equal(first) {
 		t.Errorf("UpdatedAt moved from %v to %v although the outdoor module reported nothing new", first, got)
@@ -267,7 +267,7 @@ func TestTickFilesAStaleOutdoorReadingUnderItsOwnHour(t *testing.T) {
 	cur.OutdoorTimestamp = tickNow.Add(-3 * time.Hour).Unix() // measured at 07:05
 	src := &fakeSource{cur: cur}
 
-	fetchAndUpdate(src, latest, ts, engine, tickNow)
+	Tick(src, latest, ts, engine, tickNow)
 
 	b := byHour(ts)
 	if _, ok := b[hourAt(10).Unix()]; ok {
@@ -284,7 +284,7 @@ func TestTickCachesTheReadingEvenWhenTheOutdoorModuleIsUnavailable(t *testing.T)
 	cur.OutdoorAvailable = false
 	src := &fakeSource{cur: cur}
 
-	fetchAndUpdate(src, latest, ts, engine, tickNow)
+	Tick(src, latest, ts, engine, tickNow)
 
 	got, ok := latest.Latest()
 	if !ok {
@@ -302,9 +302,145 @@ func TestTickAsksForHistoryOfTheStationItJustDescribed(t *testing.T) {
 	latest, ts, engine := newTickFixtures()
 	src := &fakeSource{cur: liveReading(0)}
 
-	fetchAndUpdate(src, latest, ts, engine, tickNow)
+	Tick(src, latest, ts, engine, tickNow)
 
 	if src.histStation.ID != "70:ee:50:00:00:01" || src.histStation.OutdoorModuleID != "02:00:00:00:00:01" {
 		t.Errorf("history requested for %+v, want the station from this tick's reading", src.histStation)
+	}
+}
+
+// --- CatchUp ---
+
+func historyHours(from, to int) []netatmo.Observation {
+	var out []netatmo.Observation
+	for h := from; h <= to; h++ {
+		out = append(out, historyPoint(h, float64(h), 0))
+	}
+	return out
+}
+
+func TestCatchUpFillsAnEmptySeriesBackToTheLookback(t *testing.T) {
+	_, ts, _ := newTickFixtures()
+	src := &fakeSource{hist: historyHours(0, 9)}
+
+	n, err := CatchUp(src, netatmo.Station{ID: "st", OutdoorModuleID: "m"}, ts, tickNow, 7*24*time.Hour)
+
+	if err != nil || n != 10 {
+		t.Fatalf("CatchUp = (%d, %v), want (10, nil)", n, err)
+	}
+	if want := tickNow.Add(-7 * 24 * time.Hour); !src.histFrom.Equal(want) || !src.histTo.Equal(tickNow) {
+		t.Errorf("window = %v..%v, want %v..%v", src.histFrom, src.histTo, want, tickNow)
+	}
+	if ts.Len() != 10 {
+		t.Errorf("series has %d hours, want 10", ts.Len())
+	}
+	if !ts.UpdatedAt().IsZero() {
+		t.Error("history made the station look like it was reporting")
+	}
+}
+
+func TestCatchUpFillsOnlyTheGapAfterAnOutage(t *testing.T) {
+	_, ts, _ := newTickFixtures()
+	// Last data is from yesterday 10:00; the process was down since.
+	ts.Backfill(netatmo.Observation{Timestamp: hourAt(10).Add(-24 * time.Hour).Unix(), Temperature: 9})
+	src := &fakeSource{hist: historyHours(0, 3)}
+
+	_, err := CatchUp(src, netatmo.Station{OutdoorModuleID: "m"}, ts, tickNow, 7*24*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := hourAt(10).Add(-24 * time.Hour); !src.histFrom.Equal(want) {
+		t.Errorf("history requested from %v, want from the newest stored hour %v", src.histFrom, want)
+	}
+}
+
+func TestCatchUpDoesNothingForACurrentSeries(t *testing.T) {
+	_, ts, _ := newTickFixtures()
+	ts.Backfill(netatmo.Observation{Timestamp: hourAt(9).Unix(), Temperature: 9}) // an hour old
+	src := &fakeSource{hist: historyHours(0, 3)}
+
+	n, err := CatchUp(src, netatmo.Station{OutdoorModuleID: "m"}, ts, tickNow, 7*24*time.Hour)
+
+	if err != nil || n != 0 || src.historyCalls != 0 {
+		t.Errorf("CatchUp = (%d, %v) with %d history calls, want a no-op", n, err, src.historyCalls)
+	}
+}
+
+func TestCatchUpNeverReachesFurtherBackThanTheLookback(t *testing.T) {
+	_, ts, _ := newTickFixtures()
+	ts.Backfill(netatmo.Observation{Timestamp: tickNow.Add(-30 * 24 * time.Hour).Unix(), Temperature: 1})
+	src := &fakeSource{}
+
+	if _, err := CatchUp(src, netatmo.Station{OutdoorModuleID: "m"}, ts, tickNow, 7*24*time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if want := tickNow.Add(-7 * 24 * time.Hour); !src.histFrom.Equal(want) {
+		t.Errorf("history requested from %v, want it capped at %v", src.histFrom, want)
+	}
+}
+
+func TestCatchUpReportsAHistoryFailure(t *testing.T) {
+	_, ts, _ := newTickFixtures()
+	src := &fakeSource{histErr: errors.New("netatmo history down")}
+
+	if _, err := CatchUp(src, netatmo.Station{OutdoorModuleID: "m"}, ts, tickNow, time.Hour*24); err == nil {
+		t.Error("expected the history error to be returned")
+	}
+}
+
+// --- Apply / Outcome ---
+
+func TestApplyReportsWhatItDid(t *testing.T) {
+	cases := []struct {
+		name        string
+		cur         func() *netatmo.Current
+		wantAppend  bool
+		wantCompute bool
+	}{
+		{"normal reading", func() *netatmo.Current { return liveReading(0) }, true, true},
+		{"outdoor module down", func() *netatmo.Current {
+			c := liveReading(0)
+			c.OutdoorAvailable = false
+			return c
+		}, false, false},
+	}
+	for _, c := range cases {
+		latest, ts, engine := newTickFixtures()
+		src := &fakeSource{}
+		cur := c.cur()
+
+		out := Apply(src, cur, latest, ts, engine, tickNow)
+
+		if out.Current != cur || out.Appended != c.wantAppend || out.Recomputed != c.wantCompute {
+			t.Errorf("%s: Outcome = {current:%v appended:%v recomputed:%v}, want appended=%v recomputed=%v",
+				c.name, out.Current == cur, out.Appended, out.Recomputed, c.wantAppend, c.wantCompute)
+		}
+		if _, ok := latest.Latest(); !ok {
+			t.Errorf("%s: reading was not cached", c.name)
+		}
+	}
+}
+
+func TestTickReportsAFailedFetchAsAnEmptyOutcome(t *testing.T) {
+	latest, ts, engine := newTickFixtures()
+
+	out := Tick(&fakeSource{curErr: errors.New("netatmo down")}, latest, ts, engine, tickNow)
+
+	if out.Current != nil || out.Appended || out.Recomputed {
+		t.Errorf("Outcome = %+v, want the zero value", out)
+	}
+}
+
+// --- engine construction ---
+
+func TestStationLocationFallsBackToUTC(t *testing.T) {
+	if got := StationLocation(""); got != time.UTC {
+		t.Errorf("StationLocation(\"\") = %v, want UTC", got)
+	}
+	if got := StationLocation("Not/AZone"); got != time.UTC {
+		t.Errorf("StationLocation(unknown) = %v, want UTC", got)
+	}
+	if got := StationLocation("Europe/Helsinki"); got.String() != "Europe/Helsinki" {
+		t.Errorf("StationLocation(Helsinki) = %v", got)
 	}
 }

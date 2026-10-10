@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -66,7 +67,7 @@ func TestTokenStoreSaveIsPrivateAndAtomic(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	store := NewTokenStore(path)
+	store := NewFileTokenStore(path)
 	if err := store.Save(&oauth2.Token{AccessToken: "a", RefreshToken: "r"}); err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +106,7 @@ func (s *seqSource) Token() (*oauth2.Token, error) {
 
 func TestPersistingTokenSourceSavesOnlyChangedTokens(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "tokens.json")
-	store := NewTokenStore(path)
+	store := NewFileTokenStore(path)
 	a := &oauth2.Token{AccessToken: "A", RefreshToken: "rA"}
 	b := &oauth2.Token{AccessToken: "B", RefreshToken: "rB"}
 	p := &persistingTokenSource{src: &seqSource{toks: []*oauth2.Token{a, a, b}}, store: store, lastSaved: "A"}
@@ -130,7 +131,7 @@ func TestPersistingTokenSourceSavesOnlyChangedTokens(t *testing.T) {
 
 func TestPersistingTokenSourcePropagatesErrors(t *testing.T) {
 	boom := errors.New("boom")
-	p := &persistingTokenSource{src: &seqSource{err: boom}, store: NewTokenStore(filepath.Join(t.TempDir(), "t.json"))}
+	p := &persistingTokenSource{src: &seqSource{err: boom}, store: NewFileTokenStore(filepath.Join(t.TempDir(), "t.json"))}
 	if _, err := p.Token(); !errors.Is(err, boom) {
 		t.Errorf("err = %v, want %v", err, boom)
 	}
@@ -152,7 +153,7 @@ func TestGetHTTPClientPersistsATokenRefreshedAtStartup(t *testing.T) {
 	ts := tokenServer(t, &hits)
 	path := filepath.Join(t.TempDir(), "tokens.json")
 	expired := &oauth2.Token{AccessToken: "at-old", RefreshToken: "rt-old", Expiry: time.Now().Add(-time.Hour)}
-	if err := NewTokenStore(path).Save(expired); err != nil {
+	if err := NewFileTokenStore(path).Save(expired); err != nil {
 		t.Fatal(err)
 	}
 
@@ -165,7 +166,7 @@ func TestGetHTTPClientPersistsATokenRefreshedAtStartup(t *testing.T) {
 	if hits.Load() != 1 {
 		t.Errorf("token endpoint hit %d times, want 1", hits.Load())
 	}
-	got, err := NewTokenStore(path).Load()
+	got, err := NewFileTokenStore(path).Load()
 	if err != nil || got.AccessToken != "at-new" || got.RefreshToken != "rt-new" {
 		t.Errorf("stored token = (%+v, %v), want the refreshed one", got, err)
 	}
@@ -176,7 +177,7 @@ func TestGetHTTPClientUsesAValidStoredTokenWithoutNetwork(t *testing.T) {
 	ts := tokenServer(t, &hits)
 	path := filepath.Join(t.TempDir(), "tokens.json")
 	valid := &oauth2.Token{AccessToken: "at-ok", RefreshToken: "rt", TokenType: "Bearer", Expiry: time.Now().Add(time.Hour)}
-	if err := NewTokenStore(path).Save(valid); err != nil {
+	if err := NewFileTokenStore(path).Save(valid); err != nil {
 		t.Fatal(err)
 	}
 
@@ -231,11 +232,23 @@ type authResult struct {
 // endpoint and returns once the callback listener is up.
 func startInteractiveAuth(t *testing.T) *authRun {
 	t.Helper()
+	return startInteractiveAuthWith(t, nil)
+}
+
+// startInteractiveAuthWith is startInteractiveAuth, going through Authorize
+// (which also stores the token) when a store is given.
+func startInteractiveAuthWith(t *testing.T, store TokenStore) *authRun {
+	t.Helper()
 	var hits atomic.Int32
 	ts := tokenServer(t, &hits)
 
 	redirect := fmt.Sprintf("http://127.0.0.1:%d/auth/callback", freePort(t))
-	a := NewAuthenticator("id", "secret", redirect, filepath.Join(t.TempDir(), "tokens.json"))
+	var a *Authenticator
+	if store != nil {
+		a = NewAuthenticatorWithStore("id", "secret", redirect, store)
+	} else {
+		a = NewAuthenticator("id", "secret", redirect, filepath.Join(t.TempDir(), "tokens.json"))
+	}
 	a.cfg.Endpoint.TokenURL = ts.URL
 
 	announced := make(chan string, 1)
@@ -245,7 +258,13 @@ func startInteractiveAuth(t *testing.T) *authRun {
 	t.Cleanup(cancel)
 	run := &authRun{redirect: redirect, done: make(chan authResult, 1)}
 	go func() {
-		tok, err := a.interactiveAuth(ctx)
+		var tok *oauth2.Token
+		var err error
+		if store != nil {
+			tok, err = a.Authorize(ctx)
+		} else {
+			tok, err = a.interactiveAuth(ctx)
+		}
 		run.done <- authResult{tok, err}
 	}()
 
@@ -341,5 +360,128 @@ func TestInteractiveAuthFailsFastWhenThePortIsTaken(t *testing.T) {
 	_, err = a.interactiveAuth(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "listen") {
 		t.Errorf("err = %v, want a listen error", err)
+	}
+}
+
+// memTokenStore is a TokenStore with no file behind it, as a database-backed
+// store would be.
+type memTokenStore struct {
+	tok     *oauth2.Token
+	loadErr error
+	saves   int
+}
+
+func (m *memTokenStore) Load() (*oauth2.Token, error) {
+	if m.loadErr != nil {
+		return nil, m.loadErr
+	}
+	if m.tok == nil {
+		return nil, fmt.Errorf("token: %w", fs.ErrNotExist)
+	}
+	cp := *m.tok
+	return &cp, nil
+}
+
+func (m *memTokenStore) Save(t *oauth2.Token) error {
+	cp := *t
+	m.tok = &cp
+	m.saves++
+	return nil
+}
+
+func TestStoredHTTPClientNeverStartsAnInteractiveFlow(t *testing.T) {
+	store := &memTokenStore{}
+	a := NewAuthenticatorWithStore("id", "secret", "http://127.0.0.1:1/cb", store)
+	a.announce = func(string, string) { t.Error("interactive flow was started") }
+
+	_, err := a.StoredHTTPClient(context.Background())
+
+	if !errors.Is(err, ErrReauthorize) {
+		t.Errorf("err = %v, want ErrReauthorize for an empty store", err)
+	}
+}
+
+func TestStoredHTTPClientDoesNotMistakeAnOutageForAMissingToken(t *testing.T) {
+	boom := errors.New("dynamodb: throttled")
+	a := NewAuthenticatorWithStore("id", "secret", "http://127.0.0.1:1/cb", &memTokenStore{loadErr: boom})
+
+	_, err := a.StoredHTTPClient(context.Background())
+
+	if err == nil || errors.Is(err, ErrReauthorize) {
+		t.Fatalf("err = %v: a storage failure must not be reported as 'authorise again'", err)
+	}
+	if !errors.Is(err, boom) {
+		t.Errorf("err = %v, want it to wrap the storage error", err)
+	}
+}
+
+func TestStoredHTTPClientRefreshesAndPersistsThroughANonFileStore(t *testing.T) {
+	var hits atomic.Int32
+	ts := tokenServer(t, &hits)
+	store := &memTokenStore{tok: &oauth2.Token{AccessToken: "at-old", RefreshToken: "rt-old", Expiry: time.Now().Add(-time.Hour)}}
+	a := NewAuthenticatorWithStore("id", "secret", "http://127.0.0.1:1/cb", store)
+	a.cfg.Endpoint.TokenURL = ts.URL
+
+	client, err := a.StoredHTTPClient(context.Background())
+	if err != nil || client == nil {
+		t.Fatalf("StoredHTTPClient = (%v, %v)", client, err)
+	}
+	if store.tok.AccessToken != "at-new" || store.tok.RefreshToken != "rt-new" {
+		t.Errorf("stored token = %+v, want the refreshed (rotated) one", store.tok)
+	}
+	if hits.Load() != 1 {
+		t.Errorf("token endpoint hit %d times, want 1", hits.Load())
+	}
+}
+
+func TestStoredHTTPClientAsksToReauthorizeWhenTheRefreshTokenIsRevoked(t *testing.T) {
+	revoked := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprint(w, `{"error":"invalid_grant"}`)
+	}))
+	t.Cleanup(revoked.Close)
+	store := &memTokenStore{tok: &oauth2.Token{AccessToken: "x", RefreshToken: "dead", Expiry: time.Now().Add(-time.Hour)}}
+	a := NewAuthenticatorWithStore("id", "secret", "http://127.0.0.1:1/cb", store)
+	a.cfg.Endpoint.TokenURL = revoked.URL
+
+	_, err := a.StoredHTTPClient(context.Background())
+
+	if !errors.Is(err, ErrReauthorize) {
+		t.Errorf("err = %v, want ErrReauthorize", err)
+	}
+}
+
+func TestStoredHTTPClientRejectsAnExpiredTokenWithNoRefreshToken(t *testing.T) {
+	store := &memTokenStore{tok: &oauth2.Token{AccessToken: "x", Expiry: time.Now().Add(-time.Hour)}}
+	a := NewAuthenticatorWithStore("id", "secret", "http://127.0.0.1:1/cb", store)
+
+	if _, err := a.StoredHTTPClient(context.Background()); !errors.Is(err, ErrReauthorize) {
+		t.Errorf("err = %v, want ErrReauthorize", err)
+	}
+}
+
+func TestAuthorizeStoresTheTokenInTheConfiguredStore(t *testing.T) {
+	store := &memTokenStore{}
+	run := startInteractiveAuthWith(t, store)
+
+	httpGet(t, run.redirect+"?state="+run.state+"&code=abc")
+
+	select {
+	case res := <-run.done:
+		if res.err != nil {
+			t.Fatalf("Authorize: %v", res.err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("flow did not finish")
+	}
+	if store.tok == nil || store.tok.AccessToken != "at-new" || store.saves != 1 {
+		t.Errorf("store = %+v after %d saves, want the new token saved once", store.tok, store.saves)
+	}
+}
+
+func TestFileTokenStoreReportsAMissingFileAsNotExist(t *testing.T) {
+	_, err := NewFileTokenStore(filepath.Join(t.TempDir(), "nope.json")).Load()
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("err = %v, want fs.ErrNotExist", err)
 	}
 }

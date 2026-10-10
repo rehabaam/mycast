@@ -45,16 +45,21 @@ func (s *Server) isStale(cur *netatmo.Current) bool {
 }
 
 func (s *Server) handleForecast(w http.ResponseWriter, r *http.Request) {
-	// Fresh() forces a synchronous recompute if the cached forecast has
-	// gone stale (e.g. a stalled scheduler), so /forecast never silently
-	// serves a forecast pinned to the wrong day — and always returns a
-	// non-nil result, unlike the raw cache accessor.
-	fc := s.engine.Fresh()
+	// With an in-process engine this recomputes a cache that has gone stale
+	// (e.g. a stalled scheduler), so the forecast is never silently pinned to
+	// the wrong day. With a stored forecast it is whatever the last ingest
+	// produced, flagged stale if that was too long ago.
+	fc, err := s.forecasts.Forecast(r.Context())
+	if err != nil {
+		log.Printf("api: forecast unavailable: %v", err)
+		writeError(w, http.StatusServiceUnavailable, "forecast unavailable")
+		return
+	}
 	writeJSON(w, http.StatusOK, fc)
 }
 
 func (s *Server) handleDebug(w http.ResponseWriter, r *http.Request) {
-	obs := s.ts.All()
+	obs := s.obs.All()
 	type summary struct {
 		Count          int       `json:"observation_count"`
 		FirstTimestamp int64     `json:"first_timestamp,omitempty"`

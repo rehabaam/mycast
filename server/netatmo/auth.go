@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log"
 	"net"
 	"net/http"
@@ -24,16 +25,24 @@ var netatmoEndpoint = oauth2.Endpoint{
 	TokenURL: "https://api.netatmo.com/oauth2/token",
 }
 
-// TokenStore persists OAuth2 tokens to disk.
-type TokenStore struct {
+// TokenStore persists the OAuth2 token between runs. Load reports a missing
+// token with an error that satisfies errors.Is(err, fs.ErrNotExist), so "not
+// authorised yet" can be told apart from "storage is unavailable".
+type TokenStore interface {
+	Load() (*oauth2.Token, error)
+	Save(*oauth2.Token) error
+}
+
+// FileTokenStore persists the token as a JSON file.
+type FileTokenStore struct {
 	path string
 }
 
-func NewTokenStore(path string) *TokenStore {
-	return &TokenStore{path: path}
+func NewFileTokenStore(path string) *FileTokenStore {
+	return &FileTokenStore{path: path}
 }
 
-func (s *TokenStore) Load() (*oauth2.Token, error) {
+func (s *FileTokenStore) Load() (*oauth2.Token, error) {
 	data, err := os.ReadFile(s.path)
 	if err != nil {
 		return nil, err
@@ -48,7 +57,7 @@ func (s *TokenStore) Load() (*oauth2.Token, error) {
 // Save writes the token via a temp file and rename, so a crash mid-write can
 // never leave a truncated token file, and the final file is always 0600
 // regardless of what permissions a pre-existing file had.
-func (s *TokenStore) Save(tok *oauth2.Token) error {
+func (s *FileTokenStore) Save(tok *oauth2.Token) error {
 	dir := filepath.Dir(s.path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
@@ -88,7 +97,7 @@ func (s *TokenStore) Save(tok *oauth2.Token) error {
 // restart.
 type persistingTokenSource struct {
 	src   oauth2.TokenSource
-	store *TokenStore
+	store TokenStore
 
 	mu        sync.Mutex
 	lastSaved string // access token most recently written (or loaded)
@@ -115,14 +124,21 @@ func (p *persistingTokenSource) Token() (*oauth2.Token, error) {
 // Authenticator manages OAuth2 authentication with Netatmo.
 type Authenticator struct {
 	cfg   *oauth2.Config
-	store *TokenStore
+	store TokenStore
 
 	// announce tells the user where to authorise and where the redirect will
 	// land. It prints to the terminal; tests replace it.
 	announce func(authURL, callbackURL string)
 }
 
+// NewAuthenticator returns an Authenticator that keeps its token in a file.
 func NewAuthenticator(clientID, clientSecret, redirectURL, tokenFile string) *Authenticator {
+	return NewAuthenticatorWithStore(clientID, clientSecret, redirectURL, NewFileTokenStore(tokenFile))
+}
+
+// NewAuthenticatorWithStore returns an Authenticator that keeps its token in
+// store, for deployments with no writable home directory.
+func NewAuthenticatorWithStore(clientID, clientSecret, redirectURL string, store TokenStore) *Authenticator {
 	return &Authenticator{
 		cfg: &oauth2.Config{
 			ClientID:     clientID,
@@ -131,7 +147,7 @@ func NewAuthenticator(clientID, clientSecret, redirectURL, tokenFile string) *Au
 			Scopes:       []string{"read_station"},
 			Endpoint:     netatmoEndpoint,
 		},
-		store:    NewTokenStore(tokenFile),
+		store:    store,
 		announce: printAuthPrompt,
 	}
 }
@@ -142,22 +158,62 @@ func printAuthPrompt(authURL, callbackURL string) {
 	fmt.Printf("Waiting for the redirect on %s ...\n", callbackURL)
 }
 
+// ErrReauthorize means there is no stored token that can be used, and the
+// OAuth2 authorisation has to be run again (see Authorize).
+var ErrReauthorize = errors.New("no usable stored token; authorise again")
+
+// StoredHTTPClient returns an HTTP client built from the stored token, without
+// ever starting an interactive flow: the right thing for unattended runs. A
+// token that has expired is refreshed immediately, so a revoked refresh token
+// shows up here rather than on the first API call. Anything the client later
+// refreshes is written back to the store.
+//
+// It returns an error wrapping ErrReauthorize when there is no stored token,
+// or it can no longer be refreshed; any other error is a failure to read the
+// store, which says nothing about the token.
+func (a *Authenticator) StoredHTTPClient(ctx context.Context) (*http.Client, error) {
+	tok, err := a.store.Load()
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return nil, fmt.Errorf("%w: nothing stored yet", ErrReauthorize)
+	case err != nil:
+		return nil, fmt.Errorf("load token: %w", err)
+	case !tok.Valid() && tok.RefreshToken == "":
+		return nil, fmt.Errorf("%w: stored token has expired and has no refresh token", ErrReauthorize)
+	}
+
+	ts := a.persistingSource(ctx, tok)
+	if tok.Valid() {
+		return oauth2.NewClient(ctx, ts), nil
+	}
+	if _, err := ts.Token(); err != nil {
+		return nil, fmt.Errorf("%w: refresh failed: %v", ErrReauthorize, err)
+	}
+	return oauth2.NewClient(ctx, ts), nil
+}
+
+// Authorize runs the interactive OAuth2 flow and stores the resulting token.
+func (a *Authenticator) Authorize(ctx context.Context) (*oauth2.Token, error) {
+	tok, err := a.interactiveAuth(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("authentication failed: %w", err)
+	}
+	if err := a.store.Save(tok); err != nil {
+		return nil, fmt.Errorf("save token: %w", err)
+	}
+	return tok, nil
+}
+
 // GetHTTPClient returns an HTTP client with a valid token, running the OAuth2
 // flow interactively if no usable stored token exists. Any token the client
-// later refreshes is written back to the token file.
+// later refreshes is written back to the store.
 func (a *Authenticator) GetHTTPClient(ctx context.Context) (*http.Client, error) {
-	if tok, err := a.store.Load(); err == nil && (tok.Valid() || tok.RefreshToken != "") {
-		ts := a.persistingSource(ctx, tok)
-		if tok.Valid() {
-			return oauth2.NewClient(ctx, ts), nil
-		}
-		// Expired: refresh now, so a revoked refresh token falls through to
-		// interactive auth instead of failing on the first API call.
-		if _, refreshErr := ts.Token(); refreshErr != nil {
-			log.Printf("Token refresh failed (%v), re-authenticating", refreshErr)
-		} else {
-			return oauth2.NewClient(ctx, ts), nil
-		}
+	client, err := a.StoredHTTPClient(ctx)
+	if err == nil {
+		return client, nil
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		log.Printf("Stored token not usable (%v), re-authenticating", err)
 	}
 
 	tok, err := a.interactiveAuth(ctx)

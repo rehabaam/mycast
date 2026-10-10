@@ -2,10 +2,13 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
 	"errors"
 	"log"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/rehabaam/mycast/forecast"
@@ -20,21 +23,69 @@ type CurrentSource interface {
 	Latest() (*netatmo.Current, bool)
 }
 
+// ForecastSource supplies the forecast to serve. It is what lets the same
+// routes run against a live engine (long-running process) or a stored
+// forecast (serverless): the API does not care which.
+type ForecastSource interface {
+	Forecast(ctx context.Context) (*forecast.Forecast, error)
+}
+
+// ObservationSource supplies the stored observations for /debug.
+type ObservationSource interface {
+	All() []netatmo.Observation
+}
+
+// engineSource serves the engine's live-checked forecast.
+type engineSource struct{ engine *forecast.Engine }
+
+func (s engineSource) Forecast(context.Context) (*forecast.Forecast, error) {
+	return s.engine.Fresh(), nil
+}
+
 // Server is the HTTP API server.
 type Server struct {
 	addr       string
 	staleAfter time.Duration
-	engine     *forecast.Engine
+	forecasts  ForecastSource
 	current    CurrentSource
-	ts         *store.TimeSeries
+	obs        ObservationSource
+	token      string
 	now        func() time.Time // replaceable in tests
 }
 
-// NewServer creates a server that will listen on addr (host:port).
-// staleAfter is how long the cached /current reading may go without being
-// refreshed before the response is flagged stale.
+// NewServer creates a server backed by an in-process engine and time series.
+// It will listen on addr (host:port). staleAfter is how long the cached
+// /current reading may go without being refreshed before the response is
+// flagged stale.
 func NewServer(addr string, staleAfter time.Duration, engine *forecast.Engine, current CurrentSource, ts *store.TimeSeries) *Server {
-	return &Server{addr: addr, staleAfter: staleAfter, engine: engine, current: current, ts: ts, now: time.Now}
+	return NewServerWith(addr, staleAfter, engineSource{engine}, current, ts)
+}
+
+// NewServerWith creates a server over arbitrary sources.
+func NewServerWith(addr string, staleAfter time.Duration, forecasts ForecastSource, current CurrentSource, obs ObservationSource) *Server {
+	return &Server{addr: addr, staleAfter: staleAfter, forecasts: forecasts, current: current, obs: obs, now: time.Now}
+}
+
+// RequireBearerToken makes every request carry "Authorization: Bearer <token>".
+// An empty token leaves the API open, which is right for a loopback-only
+// process; anything reachable from a network should set one.
+func (s *Server) RequireBearerToken(token string) *Server {
+	s.token = token
+	return s
+}
+
+// authorized reports whether the request carries the configured token. Both
+// sides are hashed first so the comparison takes the same time whatever the
+// length of what was sent.
+func (s *Server) authorized(r *http.Request) bool {
+	const prefix = "Bearer "
+	h := r.Header.Get("Authorization")
+	if len(h) < len(prefix) || !strings.EqualFold(h[:len(prefix)], prefix) {
+		return false
+	}
+	got := sha256.Sum256([]byte(h[len(prefix):]))
+	want := sha256.Sum256([]byte(s.token))
+	return subtle.ConstantTimeCompare(got[:], want[:]) == 1
 }
 
 // Handler returns the API's routes wrapped in its middleware.
@@ -49,6 +100,11 @@ func (s *Server) Handler() http.Handler {
 	// A single catch-all instead of ServeMux method patterns, so that 404 and
 	// 405 come back as JSON like every other response.
 	root := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.token != "" && !s.authorized(r) {
+			w.Header().Set("WWW-Authenticate", "Bearer")
+			writeError(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
 		h, ok := routes[r.URL.Path]
 		if !ok {
 			writeError(w, http.StatusNotFound, "not found")

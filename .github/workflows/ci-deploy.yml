@@ -1,0 +1,121 @@
+name: ci-deploy
+
+# Every push and pull request is tested. Only a push to main (or a manual run
+# from main) deploys, and only after a reviewer approves the "production"
+# environment. One-time setup is described in deploy/README.md.
+
+on:
+  pull_request:
+    paths:
+      - 'server/**'
+      - 'deploy/**'
+      - 'app/MyCastTests/Fixtures/**'
+      - '.github/workflows/**'
+  push:
+    branches: [main]
+    paths:
+      - 'server/**'
+      - 'deploy/**'
+      - 'app/MyCastTests/Fixtures/**'
+      - '.github/workflows/**'
+  workflow_dispatch:
+
+# Nothing gets more than read access unless a job asks for it.
+permissions:
+  contents: read
+
+# A newer push to a pull request replaces its older test run. Deployments
+# share one group, never overlap, and are never cancelled half-way.
+concurrency:
+  group: mycast-${{ github.event_name == 'pull_request' && github.ref || 'deploy' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+
+      - name: Go format, vet and tests
+        working-directory: server
+        run: |
+          test -z "$(gofmt -l .)" || { echo "gofmt needed on:"; gofmt -l .; exit 1; }
+          go vet ./...
+          go test -race -count=1 ./...
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: deploy/cdk/package-lock.json
+
+      - name: Build the Lambda binaries and check the CDK stack
+        working-directory: deploy/cdk
+        run: |
+          npm ci
+          npm test
+          ../build.sh
+          npx cdk synth --quiet
+
+  deploy:
+    name: Deploy
+    needs: test
+    # Never from a pull request, and never from another branch. And not until
+    # the AWS role has been set up (see deploy/README.md): while the variable is
+    # empty the job is skipped, so a push made before setup neither fails nor
+    # makes GitHub auto-create an unprotected "production" environment.
+    if: >-
+      github.event_name != 'pull_request' &&
+      github.ref == 'refs/heads/main' &&
+      vars.AWS_DEPLOY_ROLE_ARN != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    # The environment is what gates this job: it requires a reviewer, and the
+    # AWS role's trust policy accepts only jobs running in it.
+    environment: production
+    permissions:
+      id-token: write # request the OIDC token; there are no stored AWS keys
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: deploy/cdk/package-lock.json
+
+      # Role ARN and region are repository variables, not secrets: neither is
+      # sensitive, and nothing here needs a secret at all.
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: mycast-${{ github.run_id }}
+
+      - name: Build and deploy
+        working-directory: deploy/cdk
+        run: |
+          npm ci
+          ../build.sh
+          npx cdk deploy Mycast --require-approval never --ci

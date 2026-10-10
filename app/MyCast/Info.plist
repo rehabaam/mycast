@@ -3,7 +3,9 @@
 <plist version="1.0">
 <dict>
 	<key>MyCastAPIBaseURL</key>
-	<string>http://localhost:8080</string>
+	<string>$(MYCAST_API_BASE_URL)</string>
+	<key>MyCastAPIToken</key>
+	<string>$(MYCAST_API_TOKEN)</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsLocalNetworking</key>

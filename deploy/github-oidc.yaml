@@ -1,0 +1,93 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  mycast: lets one GitHub repository deploy the mycast CDK stack from GitHub
+  Actions without any stored AWS keys. Deploy this once, by hand, with
+  administrator credentials (see deploy/README.md). It is deliberately not part
+  of the CDK app: the pipeline must not be able to rewrite its own trust.
+
+Parameters:
+  GitHubOwner:
+    Type: String
+    Default: rehabaam
+    Description: GitHub user or organisation that owns the repository.
+  GitHubRepo:
+    Type: String
+    Default: mycast
+    Description: Repository name.
+  GitHubEnvironment:
+    Type: String
+    Default: production
+    Description: >-
+      GitHub Environment the deploy job runs in. Only jobs in this environment
+      can assume the role, so the environment's protection rules (required
+      reviewers, allowed branches) are what gate a deployment.
+  CdkQualifier:
+    Type: String
+    Default: hnb659fds
+    Description: CDK bootstrap qualifier (the default unless you bootstrapped with a custom one).
+  ExistingOidcProviderArn:
+    Type: String
+    Default: ''
+    Description: >-
+      ARN of this account's existing GitHub OIDC provider, if there is one
+      (an account can only have one per URL). Leave empty to create it.
+
+Conditions:
+  CreateProvider: !Equals [!Ref ExistingOidcProviderArn, '']
+
+Resources:
+  GitHubOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Condition: CreateProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList:
+        - sts.amazonaws.com
+
+  DeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: mycast-github-deploy
+      Description: Assumed by GitHub Actions to run `cdk deploy` for mycast
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !If
+                - CreateProvider
+                - !GetAtt GitHubOidcProvider.Arn
+                - !Ref ExistingOidcProviderArn
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                'token.actions.githubusercontent.com:aud': sts.amazonaws.com
+                # One repository, one environment. Not a wildcard: a fork, a
+                # pull request or another branch's job has a different subject.
+                'token.actions.githubusercontent.com:sub': !Sub 'repo:${GitHubOwner}/${GitHubRepo}:environment:${GitHubEnvironment}'
+      Policies:
+        - PolicyName: AssumeCdkBootstrapRoles
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # All the role can do is hand over to CDK's own bootstrap roles,
+              # which do the deployment. (CloudFormation then acts through the
+              # bootstrap's execution role; see "What this does not limit".)
+              - Effect: Allow
+                Action: sts:AssumeRole
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-${CdkQualifier}-deploy-role-${AWS::AccountId}-${AWS::Region}'
+                  - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-${CdkQualifier}-file-publishing-role-${AWS::AccountId}-${AWS::Region}'
+                  - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-${CdkQualifier}-lookup-role-${AWS::AccountId}-${AWS::Region}'
+
+Outputs:
+  DeployRoleArn:
+    Description: Put this in the repository variable AWS_DEPLOY_ROLE_ARN
+    Value: !GetAtt DeployRole.Arn
+  OidcProviderArn:
+    Description: The GitHub OIDC provider used by the role
+    Value: !If
+      - CreateProvider
+      - !GetAtt GitHubOidcProvider.Arn
+      - !Ref ExistingOidcProviderArn

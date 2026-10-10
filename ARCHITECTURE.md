@@ -1,6 +1,6 @@
 # Architecture
 
-mycast is a Go service that reads a Netatmo weather station, blends an ECMWF forecast with a bias correction learned from the station's own readings, and serves the result as JSON to a SwiftUI app.
+mycast is a Go service that reads a Netatmo weather station, blends an ECMWF forecast with a bias correction learned from the station's own readings, and serves the result as JSON to a SwiftUI app. It runs either as one long-lived process or as two AWS Lambda functions over a DynamoDB table; both share the same pipeline (see [Two ways to run it](#two-ways-to-run-it)).
 
 This page shows how the pieces fit and how data moves. For the forecasting maths see [FORECAST.md](FORECAST.md); for setup and the API reference see [README.md](README.md).
 
@@ -50,14 +50,19 @@ Two rules shape the layout:
 
 | Package | Responsibility | Depends on |
 |---|---|---|
-| `main` | Startup order, the scheduler tick, wiring | everything below |
-| `config` | `.env` + environment loading, validation of ranges | none |
-| `netatmo` | OAuth2 flow and token file; `GetCurrent`, `GetHistory`; the `Observation`, `Current`, `Station` types | `oauth2` |
-| `store` | `TimeSeries` (hourly buffer, merge by field group) and `CurrentCache` | `netatmo` |
+| `main` | Local mode: startup order, scheduler loop, in-process API | everything below |
+| `ingest` | The pipeline both modes share: `Tick`/`Apply`, `CatchUp`, engine construction | `forecast`, `store`, `netatmo`, `config` |
+| `config` | `.env` + environment loading, validation of ranges, `StaleAfter` | none |
+| `netatmo` | OAuth2 flow and the `TokenStore` interface; `GetCurrent`, `GetHistory`; the `Observation`, `Current`, `Station` types | `oauth2` |
+| `store` | `TimeSeries` (hourly buffer, merge by field group, restorable) and `CurrentCache` | `netatmo` |
+| `dynamo` | DynamoDB persistence: state, current reading, forecast, OAuth token; `Reader` for the API | `forecast`, `netatmo`, AWS SDK |
+| `serverless` | One stateless ingest run (`Ingestor`) and secret loading | `ingest`, `dynamo`, `store` |
+| `lambdahttp` | Runs the API's `http.Handler` behind a Lambda Function URL | `aws-lambda-go` |
+| `cmd/*` | `ingest-lambda`, `api-lambda`, `mycast-auth`: thin entry points | the packages above |
 | `openmeteo` | ECMWF hourly forecast and sunrise/sunset | none |
 | `noaa` | Kp index forecast for the aurora estimate | none |
 | `forecast` | `Engine`: forecast paths, local-day bucketing, staleness | `store`, `netatmo`, `openmeteo`, `noaa` |
-| `api` | Routes, JSON wire types, `stale` flags, graceful shutdown | `forecast`, `store`, `netatmo` |
+| `api` | Routes, JSON wire types, `stale` flags, optional bearer token, graceful shutdown | `forecast`, `store`, `netatmo` |
 
 ## Startup
 
@@ -203,6 +208,80 @@ flowchart TD
 | `/current` | `fetched_at` is older than `StaleAfter`, **or** `outdoor_timestamp` is |
 
 Both still serve the last good data; clients are expected to show a warning rather than hide it.
+
+## Two ways to run it
+
+The pipeline lives in `ingest`, which has no clock, schedule or storage of its own. What differs is who calls it and where state lives.
+
+| | Local process | AWS (Lambda + DynamoDB) |
+|---|---|---|
+| Entry point | `server/main.go` | `cmd/ingest-lambda`, `cmd/api-lambda` |
+| Schedule | an in-process ticker | EventBridge Scheduler |
+| Time series | in memory for the process's life | loaded from DynamoDB, changes written back each run |
+| OAuth token | `~/.mycast/tokens.json` | the DynamoDB table (`TokenStore` interface) |
+| `/forecast` | recomputes if the cache is stale | serves the stored forecast, flagged `stale` |
+| API auth | none (loopback only) | bearer token from Parameter Store |
+| Cost | a machine | about 3 cents a month |
+
+```mermaid
+flowchart LR
+    subgraph aws["AWS account"]
+        SCH["EventBridge Scheduler<br/>rate 30 minutes"]
+        ING["Ingest Lambda<br/>arm64, 256 MB"]
+        API["Api Lambda<br/>arm64, 128 MB<br/>Function URL"]
+        DDB[("DynamoDB<br/>one table, on-demand")]
+        SSM["Parameter Store<br/>SecureString"]
+    end
+
+    NA["Netatmo API"]
+    OM["Open-Meteo"]
+    NO["NOAA SWPC"]
+    APP["iOS app"]
+    ME["your machine<br/>mycast-auth, once"]
+
+    SCH -->|"invoke"| ING
+    ING -->|"client id and secret"| SSM
+    API -->|"api token"| SSM
+    ING <-->|"observations, token,<br/>meta"| DDB
+    ING -->|"current, forecast"| DDB
+    DDB -->|"current, forecast,<br/>meta"| API
+    ING --> NA
+    ING --> OM
+    ING --> NO
+    APP -->|"HTTPS + bearer token"| API
+    ME -->|"stores the OAuth token"| DDB
+```
+
+Only `Ingest` talks to Netatmo, and only `Api` talks to the app, so a burst of requests can't drive upstream calls and an upstream outage can't take the API down: it just serves the last stored data, flagged stale.
+
+### One ingest run
+
+```mermaid
+flowchart TD
+    S(["invoked by the schedule"]) --> A["secrets: read once per<br/>execution environment"]
+    A --> B["TokenStore.Load<br/>from DynamoDB"]
+    B --> C{"usable token?"}
+    C -- "none, or refresh revoked" --> X1(["fail the run<br/>log: run mycast-auth"])
+    C -- "valid" --> E
+    C -- "expired" --> D["refresh and save the<br/>rotated token"]
+    D --> E["LoadState:<br/>observations + staleness meta"]
+    E --> F["GetCurrent<br/>discovers the Station"]
+    F --> F1{"ok?"}
+    F1 -- no --> X2(["fail the run:<br/>nothing is saved"])
+    F1 -- yes --> G["CatchUp<br/>backfill if the store is empty<br/>or older than 3 h"]
+    G --> H["Apply:<br/>Append live reading,<br/>reconcile 3 h, Compute"]
+    H --> I["save the reading"]
+    I --> J["save only changed<br/>observations"]
+    J --> K["save meta if a newer<br/>measurement arrived"]
+    K --> L{"forecast<br/>recomputed?"}
+    L -- yes --> M["save forecast last"]
+    L -- no --> Z
+    M --> Z(["done"])
+```
+
+Order matters: the forecast is saved last, so a run that dies part-way leaves a forecast that is older than the data, never newer. The outdoor module being offline is not a failure: the reading is saved, nothing else is, and the API's `stale` flag takes over once the window passes.
+
+Observations are stored one item per hour with a TTL, and only changed hours are rewritten, so a steady-state run writes a handful of items. The forecast is gzipped JSON (about 3 KB for 27 KB), which keeps it a few write units.
 
 ## Invariants worth knowing
 

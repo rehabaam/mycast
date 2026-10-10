@@ -27,6 +27,7 @@
 		FD4DD7C5305EA2B300083788 /* MyCast.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MyCast.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		FD4DD7D2305EA2B400083788 /* MyCastTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MyCastTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		FD4DD7DC305EA2B400083788 /* MyCastUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MyCastUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		FD4DD7F1305EA2B400083788 /* MyCast.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config/MyCast.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -85,6 +86,7 @@
 				FD4DD7C7305EA2B300083788 /* MyCast */,
 				FD4DD7D5305EA2B400083788 /* MyCastTests */,
 				FD4DD7DF305EA2B400083788 /* MyCastUITests */,
+				FD4DD7F1305EA2B400083788 /* MyCast.xcconfig */,
 				FD4DD7C6305EA2B300083788 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -377,6 +379,7 @@
 		};
 		FD4DD7E5305EA2B400083788 /* Debug configuration for PBXNativeTarget "MyCast" */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = FD4DD7F1305EA2B400083788 /* MyCast.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
@@ -411,6 +414,7 @@
 		};
 		FD4DD7E6305EA2B400083788 /* Release configuration for PBXNativeTarget "MyCast" */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = FD4DD7F1305EA2B400083788 /* MyCast.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;

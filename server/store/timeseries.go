@@ -126,6 +126,46 @@ func (ts *TimeSeries) Backfill(obs ...netatmo.Observation) {
 	ts.trim()
 }
 
+// Restore replaces the buffer's contents with state loaded from persistence:
+// the stored observations, and the staleness bookkeeping (see UpdatedAt) that
+// goes with them. It is how a short-lived process, such as a serverless
+// invocation, resumes where the previous one left off. Observations are taken
+// as stored: they are floored to the hour and put in order like any others.
+func (ts *TimeSeries) Restore(obs []netatmo.Observation, lastMeasured int64, updatedAt time.Time) {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+
+	ts.data = ts.data[:0]
+	ts.lastMeasured = lastMeasured
+	ts.updatedAt = updatedAt
+	for _, o := range obs {
+		o.Timestamp = HourStart(o.Timestamp)
+		ts.data = append(ts.data, o)
+	}
+	sort.SliceStable(ts.data, func(i, j int) bool { return ts.data[i].Timestamp < ts.data[j].Timestamp })
+
+	// One slot per hour: if the input repeated an hour, the later entry wins.
+	out := ts.data[:0]
+	for _, o := range ts.data {
+		if n := len(out); n > 0 && out[n-1].Timestamp == o.Timestamp {
+			out[n-1] = o
+			continue
+		}
+		out = append(out, o)
+	}
+	ts.data = out
+	ts.trim()
+}
+
+// LastMeasured returns the newest live measurement time (Unix seconds, before
+// hour-flooring) accepted by Append, or 0 if there has been none. Together
+// with UpdatedAt it is the state Restore needs to carry across processes.
+func (ts *TimeSeries) LastMeasured() int64 {
+	ts.mu.RLock()
+	defer ts.mu.RUnlock()
+	return ts.lastMeasured
+}
+
 // trim drops the oldest observations beyond capacity. The caller holds mu.
 func (ts *TimeSeries) trim() {
 	if len(ts.data) > ts.capacity {

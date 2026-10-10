@@ -31,3 +31,8 @@ DerivedData/
 # OS/editor junk
 .DS_Store
 *.swp
+
+# Deployment (AWS)
+deploy/dist/
+# Local app configuration: the deployed server's address and bearer token.
+app/Config/Secrets.xcconfig

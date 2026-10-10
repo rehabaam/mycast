@@ -4,6 +4,8 @@ A personal weather forecasting service written in Go that fetches live data from
 
 This repo is a monorepo: the Go backend lives in [`server/`](server/) (documented below) and a SwiftUI iOS/macOS client that consumes its API lives in [`app/`](app/).
 
+The backend runs two ways: as a single process on your machine (this page), or as two AWS Lambda functions over a DynamoDB table for about 3 cents a month — see [deploy/README.md](deploy/README.md), which also covers deploying from GitHub Actions with OIDC (no stored AWS keys). [ARCHITECTURE.md](ARCHITECTURE.md) has diagrams of both.
+
 ---
 
 ## Features
@@ -241,12 +243,13 @@ All settings are read from `.env` (loaded automatically) or from real environmen
 
 ```
 server/
-├── main.go                    # startup: auth → history → scheduler → HTTP server
+├── main.go                    # local mode: startup → scheduler loop → HTTP server
+├── ingest/ingest.go           # the pipeline both modes share: tick, catch-up, engine construction
 ├── config/config.go           # .env loader + typed config struct
 ├── netatmo/
-│   ├── auth.go                # OAuth2 authorization-code flow + token file
-│   ├── client.go              # getstationsdata + getmeasure API client
-│   └── models.go              # Netatmo JSON types + Observation / Current structs
+│   ├── auth.go                # OAuth2 flow, TokenStore interface (file or DynamoDB), non-interactive refresh
+│   ├── client.go              # getstationsdata + getmeasure API client (stateless)
+│   └── models.go              # Netatmo JSON types + Observation / Current / Station structs
 ├── openmeteo/client.go        # Open-Meteo (ECMWF) forecast client
 ├── noaa/client.go             # NOAA SWPC Kp index forecast client (aurora)
 ├── store/
@@ -263,10 +266,19 @@ server/
 │   ├── precipitation.go       # persistence + climatological precipitation model
 │   ├── wind.go                # circular mean for wind direction aggregation
 │   └── models.go              # Forecast / DayForecast JSON response types
-└── api/
-    ├── server.go              # routing, JSON 404/405, listener + graceful shutdown
-    ├── handlers.go            # /forecast  /current  /health  /debug
-    └── current.go             # /current wire format (decoupled from the Netatmo types)
+├── api/
+│   ├── server.go              # routing, JSON 404/405, bearer token, listener + graceful shutdown
+│   ├── handlers.go            # /forecast  /current  /health  /debug
+│   └── current.go             # /current wire format (decoupled from the Netatmo types)
+├── dynamo/                    # DynamoDB persistence + the API's stored-data reader (AWS mode)
+├── serverless/                # one stateless ingest run, secret loading (AWS mode)
+├── lambdahttp/                # runs the API handler behind a Lambda Function URL (AWS mode)
+└── cmd/
+    ├── ingest-lambda/         # scheduled function: fetch, update, recompute, save
+    ├── api-lambda/            # Function URL function: serve from DynamoDB
+    └── mycast-auth/           # one-off OAuth authorisation, stores the token
+
+deploy/                        # AWS CDK app + build script (see deploy/README.md)
 ```
 
 `app/` is a SwiftUI client (Xcode project) that consumes this API — see `app/MyCast/Networking/WeatherService.swift` for the request layer. The server address is the `MyCastAPIBaseURL` key in `app/MyCast/Info.plist` (default `http://localhost:8080`).
@@ -275,6 +287,7 @@ server/
 
 ```bash
 cd server && go test -race ./...
+cd deploy/cdk && npm test          # the CDK stack's assertions
 ```
 
 The golden files in `app/MyCastTests/Fixtures/` are the server's real JSON for each response shape (full forecast, forecast without aurora, station-only fallback, `/current` with and without the outdoor module). The Go tests fail if the server's output drifts from them, and the Swift tests (`WeatherDecodingTests`) decode the same files, so a change that the app can't read is caught on one side or the other. After an intentional API change:
@@ -292,6 +305,7 @@ then run the app's tests (`xcodebuild test -project app/MyCast.xcodeproj -scheme
 | Package | Purpose |
 |---|---|
 | `golang.org/x/oauth2` | Netatmo OAuth2 authentication |
+| `aws-sdk-go-v2` (DynamoDB, SSM, config), `aws-lambda-go` | The AWS mode only: persistence, secrets, the Lambda runtime. Imported by `dynamo`, `serverless`, `lambdahttp` and `cmd/` — local mode links none of it |
 | Standard library only | All other functionality |
 
 External services: [Netatmo API](https://dev.netatmo.com/) (station data, requires an account), [Open-Meteo](https://open-meteo.com/) (ECMWF forecast, free, no key — set `OPENMETEO_ENABLED=false` to disable and run station-only), and [NOAA SWPC](https://www.swpc.noaa.gov/) (Kp index forecast for aurora, free, no key — automatically enabled alongside Open-Meteo).

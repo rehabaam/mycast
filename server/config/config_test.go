@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // isolate runs a test in an empty directory (so no real .env is read) with
@@ -163,6 +164,38 @@ func TestParseDotEnvValue(t *testing.T) {
 	for in, want := range cases {
 		if got := parseDotEnvValue(in); got != want {
 			t.Errorf("parseDotEnvValue(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestLoadWithoutAHomeDirectoryLeavesTheTokenFileUnset(t *testing.T) {
+	isolate(t)
+	t.Setenv("HOME", "") // a serverless runtime may have none
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load failed without a home directory: %v", err)
+	}
+	if cfg.TokenFile != "" {
+		t.Errorf("TokenFile = %q, want empty (the caller decides whether it needs one)", cfg.TokenFile)
+	}
+}
+
+func TestStaleAfter(t *testing.T) {
+	cases := []struct {
+		intervalMin int
+		want        time.Duration
+	}{
+		{1, 30 * time.Minute},  // never tighter than the module's reporting cadence allows
+		{10, 30 * time.Minute}, // 2x = 20 min, raised to the floor
+		{15, 30 * time.Minute}, // 2x lands exactly on the floor
+		{30, 60 * time.Minute}, // the default
+		{120, 240 * time.Minute},
+	}
+	for _, c := range cases {
+		cfg := &Config{FetchIntervalMin: c.intervalMin}
+		if got := cfg.StaleAfter(); got != c.want {
+			t.Errorf("FETCH_INTERVAL_MIN=%d: StaleAfter = %v, want %v", c.intervalMin, got, c.want)
 		}
 	}
 }

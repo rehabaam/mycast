@@ -130,10 +130,29 @@ final class WeatherDecodingTests: XCTestCase {
     // MARK: - Configuration
 
     func testBaseURLComesFromInfoPlistAndFallsBackToLocalhost() {
-        // The app bundle declares the address in Info.plist...
-        XCTAssertEqual(WeatherService.configuredBaseURL(), URL(string: "http://localhost:8080"))
-        // ...and a bundle without the key falls back to the same default.
+        // The app bundle declares the address (from MYCAST_API_BASE_URL)...
+        let declared = (Bundle.main.object(forInfoDictionaryKey: WeatherService.baseURLInfoKey) as? String)
+            .flatMap(URL.init(string:))
+        XCTAssertEqual(WeatherService.configuredBaseURL(), declared ?? WeatherService.fallbackBaseURL)
+        // ...and a bundle without the key falls back to localhost.
         XCTAssertEqual(WeatherService.configuredBaseURL(bundle: Bundle(for: Self.self)), WeatherService.fallbackBaseURL)
+    }
+
+    func testBearerTokenIsSentOnlyWhenConfigured() throws {
+        let url = try XCTUnwrap(URL(string: "https://example.test/forecast"))
+
+        var service = WeatherService()
+        service.apiToken = "s3cret"
+        XCTAssertEqual(service.request(for: url).value(forHTTPHeaderField: "Authorization"), "Bearer s3cret")
+
+        service.apiToken = nil
+        XCTAssertNil(service.request(for: url).value(forHTTPHeaderField: "Authorization"),
+                     "a local server started without a token must not be sent a stray header")
+    }
+
+    func testAnAPITokenIsNotInventedWhenNoneIsConfigured() {
+        // The test bundle has no MyCastAPIToken key at all.
+        XCTAssertNil(WeatherService.configuredAPIToken(bundle: Bundle(for: Self.self)))
     }
 
     // MARK: - Helpers

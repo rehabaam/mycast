@@ -396,3 +396,60 @@ func TestCurrentCacheIsSafeForConcurrentUse(t *testing.T) {
 	}
 	<-done
 }
+
+func TestRestoreResumesWhereAProcessLeftOff(t *testing.T) {
+	src := NewTimeSeries(10)
+	src.Append(obsTemp(hourTS(0, 600), 10), obsTemp(hourTS(1, 900), 11))
+	src.Backfill(obsFields(hourTS(2, 0), netatmo.FieldOutdoor|netatmo.FieldRain, 12, 0, 0.4))
+
+	// What a new process would load from storage.
+	dst := NewTimeSeries(10)
+	dst.Restore(src.All(), src.LastMeasured(), src.UpdatedAt())
+
+	if got, want := temps(dst), temps(src); !equalFloats(got, want) {
+		t.Errorf("temps = %v, want %v", got, want)
+	}
+	if !dst.UpdatedAt().Equal(src.UpdatedAt()) || dst.LastMeasured() != src.LastMeasured() {
+		t.Errorf("staleness state not restored: %v/%d vs %v/%d", dst.UpdatedAt(), dst.LastMeasured(), src.UpdatedAt(), src.LastMeasured())
+	}
+	if got := dst.All()[2].Has; got != netatmo.FieldOutdoor|netatmo.FieldRain {
+		t.Errorf("field groups lost in restore: Has = %b", got)
+	}
+
+	// The restored buffer keeps the rules: a repeat of the last measurement is
+	// not news, and a newer one is.
+	before := dst.UpdatedAt()
+	time.Sleep(10 * time.Millisecond)
+	dst.Append(obsTemp(hourTS(1, 900), 11))
+	if !dst.UpdatedAt().Equal(before) {
+		t.Error("a repeated measurement refreshed UpdatedAt after Restore")
+	}
+	dst.Append(obsTemp(hourTS(3, 100), 13))
+	if !dst.UpdatedAt().After(before) {
+		t.Error("a newer measurement did not refresh UpdatedAt after Restore")
+	}
+}
+
+func TestRestoreOrdersDeduplicatesAndTrims(t *testing.T) {
+	ts := NewTimeSeries(3)
+	ts.Restore([]netatmo.Observation{
+		obsTemp(hourTS(3, 0), 3),
+		obsTemp(hourTS(1, 0), 1),
+		obsTemp(hourTS(2, 1800), 2),
+		obsTemp(hourTS(1, 600), 11), // same hour as the second entry: later wins
+		obsTemp(hourTS(0, 0), 0),
+	}, 0, time.Time{})
+
+	if got := temps(ts); !equalFloats(got, []float64{11, 2, 3}) {
+		t.Errorf("temps = %v, want the newest three hours in order [11 2 3]", got)
+	}
+}
+
+func TestRestoreReplacesWhateverWasThere(t *testing.T) {
+	ts := NewTimeSeries(10)
+	ts.Append(obsTemp(hourTS(5, 0), 5))
+	ts.Restore(nil, 0, time.Time{})
+	if ts.Len() != 0 || !ts.UpdatedAt().IsZero() || ts.LastMeasured() != 0 {
+		t.Errorf("Restore(nil) left state behind: len=%d updated=%v measured=%d", ts.Len(), ts.UpdatedAt(), ts.LastMeasured())
+	}
+}

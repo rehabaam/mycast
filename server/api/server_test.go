@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -346,3 +347,101 @@ func TestServeAnswersRequestsAndShutsDownCleanly(t *testing.T) {
 		t.Fatal("Serve did not return after cancel")
 	}
 }
+
+// --- bearer token ---
+
+func newProtectedServer(t *testing.T, token string) *Server {
+	t.Helper()
+	s, _ := newTestServer(t, &fakeCurrent{cur: sampleCurrent(), ok: true}, history(10)...)
+	return s.RequireBearerToken(token)
+}
+
+func doAuth(t *testing.T, s *Server, path, header string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	if header != "" {
+		req.Header.Set("Authorization", header)
+	}
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	return rec
+}
+
+func TestWithoutATokenConfiguredTheAPIIsOpen(t *testing.T) {
+	s := newProtectedServer(t, "")
+	if rec := doAuth(t, s, "/current", ""); rec.Code != 200 {
+		t.Errorf("/current = %d, want 200 when no token is configured", rec.Code)
+	}
+}
+
+func TestEveryRouteRequiresTheBearerTokenWhenOneIsConfigured(t *testing.T) {
+	s := newProtectedServer(t, "s3cret-token")
+	for _, path := range []string{"/health", "/current", "/forecast", "/debug", "/nope"} {
+		rec := doAuth(t, s, path, "")
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("GET %s without a token = %d, want 401 (even unknown paths, so nothing is revealed)", path, rec.Code)
+		}
+		if rec.Header().Get("WWW-Authenticate") != "Bearer" || decode(t, rec)["error"] != "unauthorized" {
+			t.Errorf("GET %s: header %q body %s", path, rec.Header().Get("WWW-Authenticate"), rec.Body)
+		}
+	}
+}
+
+func TestBearerTokenIsCheckedExactly(t *testing.T) {
+	s := newProtectedServer(t, "s3cret-token")
+	cases := []struct {
+		name, header string
+		want         int
+	}{
+		{"correct", "Bearer s3cret-token", 200},
+		{"scheme is case-insensitive", "bearer s3cret-token", 200},
+		{"wrong token", "Bearer s3cret-tokeN", 401},
+		{"prefix of the token", "Bearer s3cret", 401},
+		{"token with a suffix", "Bearer s3cret-token-extra", 401},
+		{"empty token", "Bearer ", 401},
+		{"no scheme", "s3cret-token", 401},
+		{"other scheme", "Basic czNjcmV0LXRva2Vu", 401},
+	}
+	for _, c := range cases {
+		if got := doAuth(t, s, "/health", c.header).Code; got != c.want {
+			t.Errorf("%s: %q = %d, want %d", c.name, c.header, got, c.want)
+		}
+	}
+}
+
+// --- forecast source ---
+
+type fakeForecasts struct {
+	fc  *forecast.Forecast
+	err error
+}
+
+func (f fakeForecasts) Forecast(context.Context) (*forecast.Forecast, error) { return f.fc, f.err }
+
+func TestForecastSourceFailureIsA503WithoutDetail(t *testing.T) {
+	s := NewServerWith("127.0.0.1:0", time.Hour, fakeForecasts{err: errors.New("dynamodb: AccessDeniedException table arn:aws:...")}, &fakeCurrent{}, nopObs{})
+
+	rec := do(t, s, http.MethodGet, "/forecast")
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", rec.Code)
+	}
+	if msg, _ := decode(t, rec)["error"].(string); msg != "forecast unavailable" {
+		t.Errorf("error = %q: upstream detail must not reach the client", msg)
+	}
+}
+
+func TestServerServesAnyForecastSource(t *testing.T) {
+	want := &forecast.Forecast{StationID: "from-storage", Model: "stored", Stale: true, Days: []forecast.DayForecast{}}
+	s := NewServerWith("127.0.0.1:0", time.Hour, fakeForecasts{fc: want}, &fakeCurrent{}, nopObs{})
+
+	m := decode(t, do(t, s, http.MethodGet, "/forecast"))
+
+	if m["station_id"] != "from-storage" || m["stale"] != true {
+		t.Errorf("forecast = %v", m)
+	}
+}
+
+type nopObs struct{}
+
+func (nopObs) All() []netatmo.Observation { return nil }
