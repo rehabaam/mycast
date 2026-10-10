@@ -21,6 +21,21 @@ Parameters:
       GitHub Environment the deploy job runs in. Only jobs in this environment
       can assume the role, so the environment's protection rules (required
       reviewers, allowed branches) are what gate a deployment.
+  GitHubOwnerId:
+    Type: String
+    Default: ''
+    AllowedPattern: '^[0-9]*$'
+    Description: >-
+      Numeric ID of the owner. GitHub now puts IDs in the token's subject
+      (repo:owner@OWNER_ID/name@REPO_ID:...), which also stops a renamed or
+      re-registered account from impersonating you. Set both IDs; if either is
+      empty the older name-only subject is expected instead. Find them with
+      curl -s https://api.github.com/repos/OWNER/REPO (fields id and owner.id).
+  GitHubRepoId:
+    Type: String
+    Default: ''
+    AllowedPattern: '^[0-9]*$'
+    Description: Numeric ID of the repository (see GitHubOwnerId).
   CdkQualifier:
     Type: String
     Default: hnb659fds
@@ -34,6 +49,9 @@ Parameters:
 
 Conditions:
   CreateProvider: !Equals [!Ref ExistingOidcProviderArn, '']
+  UseIds: !And
+    - !Not [!Equals [!Ref GitHubOwnerId, '']]
+    - !Not [!Equals [!Ref GitHubRepoId, '']]
 
 Resources:
   GitHubOidcProvider:
@@ -65,7 +83,10 @@ Resources:
                 'token.actions.githubusercontent.com:aud': sts.amazonaws.com
                 # One repository, one environment. Not a wildcard: a fork, a
                 # pull request or another branch's job has a different subject.
-                'token.actions.githubusercontent.com:sub': !Sub 'repo:${GitHubOwner}/${GitHubRepo}:environment:${GitHubEnvironment}'
+                'token.actions.githubusercontent.com:sub': !If
+                  - UseIds
+                  - !Sub 'repo:${GitHubOwner}@${GitHubOwnerId}/${GitHubRepo}@${GitHubRepoId}:environment:${GitHubEnvironment}'
+                  - !Sub 'repo:${GitHubOwner}/${GitHubRepo}:environment:${GitHubEnvironment}'
       Policies:
         - PolicyName: AssumeCdkBootstrapRoles
           PolicyDocument:

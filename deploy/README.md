@@ -141,17 +141,21 @@ flowchart LR
 # An account can have only one GitHub OIDC provider. If this lists one, pass its ARN below.
 aws iam list-open-id-connect-providers
 
+# GitHub puts numeric IDs in the token's subject, so the role must be told them:
+curl -s https://api.github.com/repos/<owner>/<repo> | python3 -c "import sys,json; d=json.load(sys.stdin); print('GitHubOwnerId=%s GitHubRepoId=%s' % (d['owner']['id'], d['id']))"
+
 aws cloudformation deploy \
   --template-file deploy/github-oidc.yaml \
   --stack-name mycast-github-oidc \
-  --capabilities CAPABILITY_NAMED_IAM
-  # --parameter-overrides GitHubOwner=you GitHubRepo=mycast ExistingOidcProviderArn=arn:aws:iam::...
+  --capabilities CAPABILITY_NAMED_IAM \
+  --parameter-overrides GitHubOwner=<owner> GitHubRepo=<repo> GitHubOwnerId=<id> GitHubRepoId=<id>
+  # add ExistingOidcProviderArn=arn:aws:iam::... if the account already has the GitHub provider
 
 aws cloudformation describe-stacks --stack-name mycast-github-oidc \
   --query 'Stacks[0].Outputs[?OutputKey==`DeployRoleArn`].OutputValue' --output text
 ```
 
-The role trusts exactly `repo:<owner>/<repo>:environment:production`. A fork, a pull request, or a job on another branch has a different subject and is refused.
+The role trusts exactly `repo:<owner>@<owner-id>/<repo>@<repo-id>:environment:production`: a fork, a pull request, or a job on another branch has a different subject and is refused, and because the IDs are in it, a renamed or re-registered account can't impersonate you.
 
 **2. Bootstrap CDK** (once per account and region), as in step 2 of the manual deploy: `cd deploy/cdk && npm ci && npx cdk bootstrap aws://<ACCOUNT_ID>/<REGION> -c budgetEmail=none`. (The CDK app refuses to run without a `budgetEmail`, and bootstrapping runs it; `none` is fine here, since bootstrapping creates no budget.) Create the three Parameter Store secrets (step 1 above) too, if you have not.
 
@@ -244,3 +248,19 @@ The alert address is passed at deploy time as `budgetEmail`. The CDK app **refus
 - **No point-in-time recovery** on the table. Losing it costs one re-authorisation and a history reload.
 - **No custom domain.** The Function URL is `*.lambda-url.<region>.on.aws`. A custom domain needs CloudFront in front.
 - **Not yet deployed to a live account.** The stack synthesises, its assertions pass, and the Go logic is tested against in-memory fakes of DynamoDB and Parameter Store; the first real `cdk deploy` is the first time it meets AWS.
+
+## Troubleshooting
+
+**`Could not assume role with OIDC: Not authorized to perform sts:AssumeRoleWithWebIdentity`**
+
+AWS rejected the token against the role's trust policy, and the message never says which part. CloudTrail does: look at the subject the token actually carried and compare it with the role's condition.
+
+```bash
+aws cloudtrail lookup-events --region <region> \
+  --lookup-attributes AttributeKey=EventName,AttributeValue=AssumeRoleWithWebIdentity --max-results 1 \
+  --query 'Events[0].CloudTrailEvent' --output text | python3 -c "import sys,json; print(json.load(sys.stdin)['userIdentity']['userName'])"
+
+aws iam get-role --role-name mycast-github-deploy --query 'Role.AssumeRolePolicyDocument'
+```
+
+The first prints the token's subject (for example `repo:owner@123/name@456:environment:production`); the second shows what the role expects. They must be identical. The usual causes are the ID-qualified subject (above), a wrong owner, repo or environment name, or the job not running in the `production` environment.
