@@ -1,8 +1,9 @@
+import * as crypto from 'crypto';
 import * as path from 'path';
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
-import * as budgets from 'aws-cdk-lib/aws-budgets';
+import * as cr from 'aws-cdk-lib/custom-resources';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as logs from 'aws-cdk-lib/aws-logs';
@@ -233,34 +234,69 @@ export class MycastStack extends cdk.Stack {
     );
     topic.addSubscription(new subs.LambdaSubscription(killSwitch));
 
-    const email = { subscriptionType: 'EMAIL', address: guard.email };
+    const email = { SubscriptionType: 'EMAIL', Address: guard.email };
     const notification = (
       type: 'ACTUAL' | 'FORECASTED',
       threshold: number,
-      subscribers: { subscriptionType: string; address: string }[],
-    ): budgets.CfnBudget.NotificationWithSubscribersProperty => ({
-      notification: {
-        notificationType: type,
-        comparisonOperator: 'GREATER_THAN',
-        threshold,
-        thresholdType: 'PERCENTAGE',
+      subscribers: { SubscriptionType: string; Address: string }[],
+    ) => ({
+      Notification: {
+        NotificationType: type,
+        ComparisonOperator: 'GREATER_THAN',
+        Threshold: threshold,
+        ThresholdType: 'PERCENTAGE',
       },
-      subscribers,
+      Subscribers: subscribers,
     });
 
-    new budgets.CfnBudget(this, 'MonthlyBudget', {
-      budget: {
-        budgetName: 'mycast-monthly',
-        budgetType: 'COST',
-        timeUnit: 'MONTHLY',
-        budgetLimit: { amount: guard.limitUsd, unit: 'USD' },
+    // AWS::Budgets::Budget is not available in every region (eu-north-1 lacks
+    // it), but the Budgets API is global, so the budget is created through the
+    // API from a custom resource. Its name carries a hash of its settings: a
+    // change creates the new budget first, then deletes the old one.
+    const settings = JSON.stringify([guard.email, guard.limitUsd, guard.killAtPercent]);
+    const budgetName = `mycast-monthly-${crypto.createHash('sha256').update(settings).digest('hex').slice(0, 8)}`;
+    const budget = {
+      AccountId: this.account,
+      Budget: {
+        BudgetName: budgetName,
+        BudgetType: 'COST',
+        TimeUnit: 'MONTHLY',
+        BudgetLimit: { Amount: String(guard.limitUsd), Unit: 'USD' },
       },
-      notificationsWithSubscribers: [
+      NotificationsWithSubscribers: [
         notification('ACTUAL', 50, [email]),
-        notification('ACTUAL', guard.killAtPercent, [email, { subscriptionType: 'SNS', address: topic.topicArn }]),
+        notification('ACTUAL', guard.killAtPercent, [
+          email,
+          { SubscriptionType: 'SNS', Address: topic.topicArn },
+        ]),
         notification('ACTUAL', 100, [email]),
         notification('FORECASTED', 100, [email]),
       ],
+    };
+    const budgetApi = {
+      service: 'Budgets',
+      region: 'us-east-1',
+      physicalResourceId: cr.PhysicalResourceId.of(budgetName),
+    };
+    new cr.AwsCustomResource(this, 'MonthlyBudget', {
+      installLatestAwsSdk: false,
+      onCreate: { ...budgetApi, action: 'createBudget', parameters: budget },
+      onUpdate: { ...budgetApi, action: 'createBudget', parameters: budget },
+      onDelete: {
+        ...budgetApi,
+        action: 'deleteBudget',
+        parameters: { AccountId: this.account, BudgetName: budgetName },
+      },
+      policy: cr.AwsCustomResourcePolicy.fromStatements([
+        new iam.PolicyStatement({
+          actions: ['budgets:CreateBudget', 'budgets:DeleteBudget', 'budgets:ModifyBudget', 'budgets:ViewBudget'],
+          resources: [`arn:${this.partition}:budgets::${this.account}:budget/mycast-monthly-*`],
+        }),
+      ]),
+      logGroup: new logs.LogGroup(this, 'MonthlyBudgetLogs', {
+        retention: logs.RetentionDays.TWO_WEEKS,
+        removalPolicy: cdk.RemovalPolicy.DESTROY,
+      }),
     });
 
     new cdk.CfnOutput(this, 'ResetCommand', {

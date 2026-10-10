@@ -128,25 +128,42 @@ test('outputs expose the URL, table, ingest function and authorise command', () 
 
 const guard = { email: 'alerts@example.com', limitUsd: 50, killAtPercent: 80 };
 
+// AWS::Budgets::Budget is missing in some regions (eu-north-1), so the budget
+// is created through the Budgets API by a custom resource. Read its call back.
+function budgetCall(t: Template): any {
+  const res = Object.values(t.findResources('Custom::AWS')).find((r: any) => String(JSON.stringify(r.Properties.Create)).includes('createBudget')) as any;
+  assert.ok(res, 'budget custom resource');
+  const create = res.Properties.Create;
+  const text = typeof create === 'string' ? create : (create['Fn::Join'][1] as any[]).map((x) => (typeof x === 'string' ? x : 'REF')).join('');
+  return JSON.parse(text);
+}
+
 test('without a spending guard no budget or kill switch is created', () => {
   const t = synth();
+  assert.equal(Object.keys(t.findResources('Custom::AWS')).length, 0);
   t.resourceCountIs('AWS::Budgets::Budget', 0);
   t.resourceCountIs('AWS::SNS::Topic', 0);
 });
 
+test('the budget is not a CloudFormation Budget resource, which eu-north-1 lacks', () => {
+  const t = synth({ spendingGuard: guard });
+  t.resourceCountIs('AWS::Budgets::Budget', 0);
+  assert.equal(budgetCall(t).region, 'us-east-1');
+});
+
 test('the budget is $50 a month with early warnings and a kill trigger', () => {
   const t = synth({ spendingGuard: guard });
-  t.hasResourceProperties('AWS::Budgets::Budget', {
-    Budget: {
-      BudgetName: 'mycast-monthly',
-      BudgetType: 'COST',
-      TimeUnit: 'MONTHLY',
-      BudgetLimit: { Amount: 50, Unit: 'USD' },
-    },
-  });
+  const call = budgetCall(t);
+  assert.equal(call.action, 'createBudget');
+  assert.match(call.parameters.Budget.BudgetName, /^mycast-monthly-[0-9a-f]{8}$/);
+  const { BudgetName: _name, ...rest } = call.parameters.Budget;
+  assert.deepEqual(
+    rest,
+    { BudgetType: 'COST', TimeUnit: 'MONTHLY', BudgetLimit: { Amount: '50', Unit: 'USD' } },
+  );
+  assert.equal(call.physicalResourceId.id, call.parameters.Budget.BudgetName);
 
-  const budget = Object.values(t.findResources('AWS::Budgets::Budget'))[0] as any;
-  const rows = budget.Properties.NotificationsWithSubscribers.map((n: any) => ({
+  const rows = call.parameters.NotificationsWithSubscribers.map((n: any) => ({
     type: n.Notification.NotificationType,
     at: n.Notification.Threshold,
     kinds: n.Subscribers.map((x: any) => x.SubscriptionType).sort(),
@@ -158,9 +175,23 @@ test('the budget is $50 a month with early warnings and a kill trigger', () => {
     { type: 'FORECASTED', at: 100, kinds: ['EMAIL'] },
   ]);
   // Only the 80 % alert is wired to the kill switch.
-  const snsRows = rows.filter((r: any) => r.kinds.includes('SNS'));
-  assert.equal(snsRows.length, 1);
-  assert.equal(snsRows[0].at, 80);
+  assert.equal(rows.filter((r: any) => r.kinds.includes('SNS')).length, 1);
+});
+
+test('changing the budget settings renames it, so an update replaces rather than collides', () => {
+  const a = budgetCall(synth({ spendingGuard: guard })).parameters.Budget.BudgetName;
+  const b = budgetCall(synth({ spendingGuard: { ...guard, limitUsd: 60 } })).parameters.Budget.BudgetName;
+  assert.notEqual(a, b);
+});
+
+test('the budget custom resource may manage only mycast budgets', () => {
+  const t = synth({ spendingGuard: guard });
+  const stmts = Object.entries(t.findResources('AWS::IAM::Policy'))
+    .filter(([id]) => id.includes('MonthlyBudget'))
+    .flatMap(([, p]: [string, any]) => p.Properties.PolicyDocument.Statement as any[])
+    .filter((s) => String(s.Action).includes('budgets'));
+  assert.equal(stmts.length, 1);
+  assert.ok(JSON.stringify(stmts[0].Resource).includes('budget/mycast-monthly-*'));
 });
 
 test('the kill switch can change concurrency on the two functions and nothing else', () => {
@@ -200,14 +231,12 @@ test('only AWS Budgets, in this account, may publish to the alert topic', () => 
   });
 });
 
-test('the email address is not baked into anything but the budget', () => {
+test('the email address appears only in the budget call', () => {
   const t = synth({ spendingGuard: guard });
-  const json = JSON.stringify(t.toJSON());
-  const occurrences = json.split('alerts@example.com').length - 1;
-  assert.equal(occurrences, 4, 'one per notification, in the budget only');
-  const outside = JSON.stringify({ ...t.toJSON(), Resources: Object.fromEntries(
-    Object.entries(t.toJSON().Resources).filter(([, r]: [string, any]) => r.Type !== 'AWS::Budgets::Budget')) });
-  assert.ok(!outside.includes('alerts@example.com'));
+  const res = t.toJSON().Resources;
+  const holders = Object.entries(res).filter(([, r]) => JSON.stringify(r).includes('alerts@example.com'));
+  assert.equal(holders.length, 1);
+  assert.equal((holders[0][1] as any).Type, 'Custom::AWS');
 });
 
 test('the reset command and an API concurrency ceiling are available', () => {
