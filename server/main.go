@@ -40,17 +40,25 @@ func main() {
 	}
 
 	// --- Netatmo client ---
-	client := netatmo.NewClient(httpClient, cfg.StationID, cfg.OutdoorModuleID, cfg.WindModuleID, cfg.RainModuleID)
+	client := netatmo.NewClient(httpClient, netatmo.Config{
+		StationID:       cfg.StationID,
+		OutdoorModuleID: cfg.OutdoorModuleID,
+		WindModuleID:    cfg.WindModuleID,
+		RainModuleID:    cfg.RainModuleID,
+	})
 
 	// --- Time series store ---
 	ts := store.NewTimeSeries(cfg.HistoryDays * 24)
 
-	// --- Discover station/module IDs via a live reading ---
+	// --- Discover the station (IDs, location, timezone) via a live reading ---
 	log.Println("Fetching current station reading...")
 	cur, err := client.GetCurrent()
 	if err != nil {
 		log.Fatalf("Could not reach station: %v", err)
 	}
+	station := cur.Station
+	latest := &store.CurrentCache{}
+	latest.Put(cur)
 	if cur.OutdoorAvailable {
 		log.Printf("Station connected — outdoor %.1f°C, humidity %.0f%%", cur.OutdoorTemp, cur.OutdoorHumidity)
 	} else {
@@ -62,7 +70,7 @@ func main() {
 	// buffer does not reject older records.
 	log.Printf("Loading %d days of historical data from Netatmo...", cfg.HistoryDays)
 	from := time.Now().Add(-time.Duration(cfg.HistoryDays) * 24 * time.Hour)
-	hist, err := client.GetHistory(from, time.Now())
+	hist, err := client.GetHistory(station, from, time.Now())
 	if err != nil {
 		log.Printf("Warning: history load failed (%v) — forecast will use current reading only", err)
 	} else {
@@ -78,17 +86,21 @@ func main() {
 	}
 
 	// --- Forecast engine ---
-	// A station that has been silent for more than 2 fetch intervals is
+	// A station that has delivered no new measurement for staleAfter is
 	// considered stale — enough slack that a single missed tick doesn't trip
-	// it, but short enough that a stalled scheduler (e.g. this process being
-	// paused, repeated upstream failures, or an offline outdoor module) gets
-	// flagged. The same window bounds how old a cached forecast may get
-	// before the next read recomputes it.
-	staleAfter := 2 * time.Duration(cfg.FetchIntervalMin) * time.Minute
+	// it, but short enough that a stalled scheduler, repeated upstream
+	// failures, or an outdoor module that has gone quiet get flagged. The same
+	// window bounds how old a cached forecast may get before the next read
+	// recomputes it.
+	//
+	// Staleness follows the module's own measurement time, and Netatmo
+	// modules only report every ~10 minutes, so it can't be tighter than a
+	// few reporting periods however often the service polls.
+	staleAfter := max(2*time.Duration(cfg.FetchIntervalMin)*time.Minute, minStaleAfter)
 
 	engineCfg := forecast.Config{
-		StationID:  client.StationID(),
-		Location:   stationLocation(client.Timezone()),
+		StationID:  station.ID,
+		Location:   stationLocation(station.Timezone),
 		StaleAfter: staleAfter,
 		PastDays:   cfg.HistoryDays,
 	}
@@ -97,7 +109,8 @@ func main() {
 	// known and the integration is enabled. The engine falls back to the
 	// pure station model automatically if it is unset or later fails.
 	if cfg.OpenMeteoEnabled {
-		if lat, lon, ok := client.Location(); ok {
+		if station.HasLocation {
+			lat, lon := station.Lat, station.Lon
 			engineCfg.OpenMeteo = openmeteo.NewClient(lat, lon)
 			engineCfg.Lat, engineCfg.Lon = lat, lon
 			// Logged coarsely (~1 km): the exact coordinates are the user's
@@ -120,11 +133,11 @@ func main() {
 	log.Println("Forecast ready")
 
 	// --- Background scheduler ---
-	go runScheduler(ctx, client, ts, engine, cfg)
+	go runScheduler(ctx, client, latest, ts, engine, cfg)
 
 	// --- HTTP API ---
 	addr := net.JoinHostPort(cfg.BindAddr, cfg.Port)
-	srv := api.NewServer(addr, staleAfter, engine, client, ts)
+	srv := api.NewServer(addr, staleAfter, engine, latest, ts)
 	ln, err := srv.Listen()
 	if err != nil {
 		log.Fatalf("Cannot listen on %s: %v", addr, err)
@@ -173,7 +186,7 @@ func stationLocation(name string) *time.Location {
 
 // runScheduler periodically fetches the latest station reading, appends it to
 // the time series, and recomputes the forecast.
-func runScheduler(ctx context.Context, client *netatmo.Client, ts *store.TimeSeries, engine *forecast.Engine, cfg *config.Config) {
+func runScheduler(ctx context.Context, src stationSource, latest *store.CurrentCache, ts *store.TimeSeries, engine *forecast.Engine, cfg *config.Config) {
 	interval := time.Duration(cfg.FetchIntervalMin) * time.Minute
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -183,16 +196,20 @@ func runScheduler(ctx context.Context, client *netatmo.Client, ts *store.TimeSer
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			fetchAndUpdate(client, ts, engine, time.Now())
+			fetchAndUpdate(src, latest, ts, engine, time.Now())
 		}
 	}
 }
+
+// minStaleAfter is the shortest staleness window used regardless of the
+// polling interval; see main.
+const minStaleAfter = 30 * time.Minute
 
 // stationSource is the part of *netatmo.Client the scheduler uses, so a tick
 // can be tested without the network.
 type stationSource interface {
 	GetCurrent() (*netatmo.Current, error)
-	GetHistory(from, to time.Time) ([]netatmo.Observation, error)
+	GetHistory(st netatmo.Station, from, to time.Time) ([]netatmo.Observation, error)
 }
 
 // reconcileWindow is how far back each tick re-reads Netatmo's hourly
@@ -200,12 +217,15 @@ type stationSource interface {
 // yet at one tick is picked up at a later one.
 const reconcileWindow = 3 * time.Hour
 
-func fetchAndUpdate(src stationSource, ts *store.TimeSeries, engine *forecast.Engine, now time.Time) {
+func fetchAndUpdate(src stationSource, latest *store.CurrentCache, ts *store.TimeSeries, engine *forecast.Engine, now time.Time) {
 	cur, err := src.GetCurrent()
 	if err != nil {
 		log.Printf("Scheduler: fetch error: %v", err)
 		return
 	}
+	// /current serves this even when the outdoor module is down: the rest of
+	// the reading (indoor, pressure, module health) is still current.
+	latest.Put(cur)
 
 	obs, ok := cur.Observation()
 	if !ok {
@@ -216,7 +236,7 @@ func fetchAndUpdate(src stationSource, ts *store.TimeSeries, engine *forecast.En
 		return
 	}
 	ts.Append(obs)
-	reconcileCompletedHours(src, ts, now)
+	reconcileCompletedHours(src, cur.Station, ts, now)
 
 	log.Printf("Scheduler: updated — T=%.1f°C H=%.0f%% W=%.1fkm/h — recomputing forecast", obs.Temperature, obs.Humidity, obs.WindSpeed)
 	engine.Compute()
@@ -227,8 +247,8 @@ func fetchAndUpdate(src stationSource, ts *store.TimeSeries, engine *forecast.En
 // only a snapshot: it can't supply a clock-hour rain total, and its hourly
 // bucket is provisional until the hour is over. The hour still in progress is
 // left to the live reading.
-func reconcileCompletedHours(src stationSource, ts *store.TimeSeries, now time.Time) {
-	hist, err := src.GetHistory(now.Add(-reconcileWindow), now)
+func reconcileCompletedHours(src stationSource, st netatmo.Station, ts *store.TimeSeries, now time.Time) {
+	hist, err := src.GetHistory(st, now.Add(-reconcileWindow), now)
 	if err != nil {
 		log.Printf("Scheduler: could not refresh recent hours: %v", err)
 		return

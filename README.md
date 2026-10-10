@@ -148,7 +148,9 @@ Forecast for up to three days, with daily summaries and hourly breakdowns. A "da
 >
 > `aurora` is a deliberately simple heuristic, not a validated aurora nowcast: it checks whether NOAA's forecast Kp index clears the threshold for your station's geomagnetic latitude, then derates for daylight and cloud cover. It doesn't model solar wind speed or IMF orientation, so treat it as "is it geomagnetically active enough, with clear dark sky" rather than a precise prediction. Requires `OPENMETEO_ENABLED=true` (aurora needs the same cloud cover/sunrise/sunset data as the ECMWF path).
 >
-> `/forecast` always returns a live-checked forecast: if the cached one is older than 2×`FETCH_INTERVAL_MIN` (e.g. the background scheduler stalled), the server recomputes synchronously before responding rather than silently serving stale day labels. `stale` reports something a recompute can't fix: it is `true` when the station hasn't delivered a reading for more than 2×`FETCH_INTERVAL_MIN` (the scheduler is stuck, or the outdoor module is offline) or when there is no data at all, in which case `days` is an empty array. Clients should show a warning, not hide the forecast.
+> `/forecast` always returns a live-checked forecast: if the cached one is older than 2×`FETCH_INTERVAL_MIN` (e.g. the background scheduler stalled), the server recomputes synchronously before responding rather than silently serving stale day labels. `stale` reports something a recompute can't fix: it is `true` when the station hasn't delivered a *new measurement* for longer than the staleness window (the scheduler is stuck, fetches are failing, or the outdoor module has gone quiet — including while the indoor base keeps reporting) or when there is no data at all, in which case `days` is an empty array. Clients should show a warning, not hide the forecast.
+>
+> The staleness window is 2×`FETCH_INTERVAL_MIN`, but never less than 30 minutes: it follows the outdoor module's own measurement time, and Netatmo modules only report every ~10 minutes, so polling more often than that mustn't make a healthy station look stale.
 >
 > Every timestamp is RFC 3339 in UTC, to whole seconds.
 
@@ -158,8 +160,9 @@ The station's latest reading, as of the last scheduled fetch (every `FETCH_INTER
 
 ```jsonc
 {
-  "timestamp": "2026-04-26T16:33:21Z",   // when the station measured it
+  "timestamp": "2026-04-26T16:33:21Z",   // when the indoor base station measured its part
   "fetched_at": "2026-04-26T16:33:40Z",  // when this service last retrieved it
+  "outdoor_timestamp": "2026-04-26T16:30:02Z", // when the outdoor module itself measured; omitted if unavailable
   "stale": false,
   "outdoor_available": true,
   "outdoor_temp_c": 8.3,
@@ -188,7 +191,7 @@ The station's latest reading, as of the last scheduled fetch (every `FETCH_INTER
 }
 ```
 
-> `stale` is `true` when `fetched_at` is more than 2×`FETCH_INTERVAL_MIN` old: the server keeps answering with its last good reading while fetches from Netatmo are failing, so a client must check this flag (the bundled app shows a warning) rather than treat every `200` as live.
+> `stale` is `true` when either `fetched_at` or `outdoor_timestamp` is older than the staleness window (see `/forecast`): the server keeps answering with its last good reading while fetches from Netatmo are failing, and a module that has gone quiet leaves its last values on the dashboard while the base keeps reporting. A client must check this flag (the bundled app shows a warning) rather than treat every `200` as live. `timestamp` alone can't show the second case, because it belongs to the base station.
 >
 > `outdoor_available` is `false` when the outdoor module is missing or unreachable; `outdoor_*`, `apparent_temp_c` and the `today_outdoor_*` values are then zeros rather than readings. The service also refuses to record such a reading in its history, so a dead battery can't plant fake 0 °C points in the forecast.
 >
@@ -228,7 +231,7 @@ All settings are read from `.env` (loaded automatically) or from real environmen
 | `TOKEN_FILE` | `~/.mycast/tokens.json` | OAuth2 token persistence path (a leading `~/` is expanded) |
 | `BIND_ADDR` | `127.0.0.1` | Address the API listens on. The API is unauthenticated, so it is loopback-only by default; use `0.0.0.0` to reach it from other devices on a trusted network. |
 | `PORT` | `8080` | HTTP server port (1–65535) |
-| `FETCH_INTERVAL_MIN` | `30` | How often to poll the station (minutes, 1–1440) |
+| `FETCH_INTERVAL_MIN` | `30` | How often to poll the station (minutes, 1–1440). The staleness window is twice this, with a 30-minute floor. |
 | `HISTORY_DAYS` | `7` | Days of hourly history to load and retain (2–30). Also the span of Open-Meteo hindcast used to learn the bias correction. |
 | `OPENMETEO_ENABLED` | `true` | Use ECMWF (via Open-Meteo) with local bias correction as the primary forecast; falls back to the station-only model automatically if unreachable. No API key needed. |
 
@@ -246,7 +249,9 @@ server/
 │   └── models.go              # Netatmo JSON types + Observation / Current structs
 ├── openmeteo/client.go        # Open-Meteo (ECMWF) forecast client
 ├── noaa/client.go             # NOAA SWPC Kp index forecast client (aurora)
-├── store/timeseries.go        # thread-safe in-memory buffer: one observation per clock hour
+├── store/
+│   ├── timeseries.go          # thread-safe in-memory buffer: one observation per clock hour, merged by field group
+│   └── current.go             # cache of the latest live reading served by /current
 ├── forecast/
 │   ├── holtwinters.go         # deterministic damped-trend Holt-Winters (station-only fallback)
 │   ├── mos.go                 # local bias correction (Model Output Statistics) for the ECMWF path

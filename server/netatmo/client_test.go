@@ -28,7 +28,7 @@ const stationsFixture = `{
       "place": {"location": [24.94, 60.17], "city": "Helsinki", "country": "FI", "altitude": 10, "timezone": "Europe/Helsinki"},
       "modules": [
         {"_id": "02:00:00:00:00:01", "type": "NAModule1", "module_name": "Outdoor", "battery_percent": 80, "reachable": true, "rf_status": 60, "last_seen": 1781000000,
-         "dashboard_data": {"Temperature": 16.6, "Humidity": 84, "min_temp": 11.2, "max_temp": 17.1, "date_min_temp": 1780990000, "date_max_temp": 1780995000}},
+         "dashboard_data": {"time_utc": 1780999900, "Temperature": 16.6, "Humidity": 84, "min_temp": 11.2, "max_temp": 17.1, "date_min_temp": 1780990000, "date_max_temp": 1780995000}},
         {"_id": "06:00:00:00:00:01", "type": "NAModule2", "module_name": "Wind", "battery_percent": 90, "reachable": true, "rf_status": 70, "last_seen": 1781000000,
          "dashboard_data": {"WindStrength": 3, "WindAngle": 102, "GustStrength": 13, "GustAngle": 110}},
         {"_id": "05:00:00:00:00:01", "type": "NAModule3", "module_name": "Rain", "battery_percent": 70, "reachable": true, "rf_status": 65, "last_seen": 1781000000,
@@ -67,7 +67,7 @@ func newTestClient(t *testing.T, h http.Handler, station, outdoor, wind, rain st
 	t.Helper()
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
-	c := NewClient(srv.Client(), station, outdoor, wind, rain)
+	c := NewClient(srv.Client(), Config{StationID: station, OutdoorModuleID: outdoor, WindModuleID: wind, RainModuleID: rain})
 	c.baseURL = srv.URL
 	return c
 }
@@ -116,6 +116,13 @@ func TestGetCurrentParsesReadings(t *testing.T) {
 	if cur.Timestamp != 1781000000 || cur.TodayOutdoorMinAt != 1780990000 || cur.TodayOutdoorMaxAt != 1780995000 {
 		t.Errorf("timestamps = %d/%d/%d", cur.Timestamp, cur.TodayOutdoorMinAt, cur.TodayOutdoorMaxAt)
 	}
+	// The outdoor module's own measurement time is kept apart from the base's.
+	if cur.OutdoorTimestamp != 1780999900 {
+		t.Errorf("OutdoorTimestamp = %d, want 1780999900 (the module's time_utc, not the base's 1781000000)", cur.OutdoorTimestamp)
+	}
+	if !cur.WindAvailable {
+		t.Error("WindAvailable = false, want true")
+	}
 	if cur.PressureTrend != "up" || cur.TempTrend != "stable" {
 		t.Errorf("trends = %q/%q, want up/stable", cur.PressureTrend, cur.TempTrend)
 	}
@@ -124,34 +131,64 @@ func TestGetCurrentParsesReadings(t *testing.T) {
 	}
 }
 
-func TestGetCurrentDiscoversIDsLocationAndTimezone(t *testing.T) {
+func TestGetCurrentDescribesTheStation(t *testing.T) {
 	c := newTestClient(t, serveStations(stationsFixture), "", "", "", "")
 
-	if _, _, ok := c.Location(); ok {
-		t.Fatal("Location ok before any GetCurrent")
-	}
-	if c.StationID() != "" || c.Timezone() != "" {
-		t.Fatal("StationID/Timezone set before any GetCurrent")
-	}
-
-	if _, err := c.GetCurrent(); err != nil {
+	cur, err := c.GetCurrent()
+	if err != nil {
 		t.Fatal(err)
 	}
+	st := cur.Station
 
-	if got := c.StationID(); got != "70:ee:50:00:00:01" {
-		t.Errorf("StationID = %q", got)
+	if st.ID != "70:ee:50:00:00:01" {
+		t.Errorf("ID = %q", st.ID)
 	}
 	// Netatmo reports [longitude, latitude].
-	lat, lon, ok := c.Location()
-	if !ok || lat != 60.17 || lon != 24.94 {
-		t.Errorf("Location = (%v, %v, %v), want (60.17, 24.94, true) — lat/lon must not be swapped", lat, lon, ok)
+	if !st.HasLocation || st.Lat != 60.17 || st.Lon != 24.94 {
+		t.Errorf("location = (%v, %v, %v), want (60.17, 24.94, true) — lat/lon must not be swapped", st.Lat, st.Lon, st.HasLocation)
 	}
-	if got := c.Timezone(); got != "Europe/Helsinki" {
-		t.Errorf("Timezone = %q", got)
+	if st.Timezone != "Europe/Helsinki" {
+		t.Errorf("Timezone = %q", st.Timezone)
 	}
-	_, outdoor, wind, rain := c.ids()
-	if outdoor != "02:00:00:00:00:01" || wind != "06:00:00:00:00:01" || rain != "05:00:00:00:00:01" {
-		t.Errorf("module IDs = %q/%q/%q", outdoor, wind, rain)
+	if st.OutdoorModuleID != "02:00:00:00:00:01" || st.WindModuleID != "06:00:00:00:00:01" || st.RainModuleID != "05:00:00:00:00:01" {
+		t.Errorf("module IDs = %q/%q/%q", st.OutdoorModuleID, st.WindModuleID, st.RainModuleID)
+	}
+}
+
+func TestConfiguredIDsOverrideDiscoveredOnes(t *testing.T) {
+	c := newTestClient(t, serveStations(stationsFixture), "70:ee:50:99:99:99", "", "06:00:00:00:00:01", "")
+
+	cur, err := c.GetCurrent()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cur.Station.ID != "70:ee:50:99:99:99" {
+		t.Errorf("ID = %q, want the configured one", cur.Station.ID)
+	}
+	if cur.Station.OutdoorModuleID != "02:00:00:00:00:01" {
+		t.Errorf("OutdoorModuleID = %q, want the discovered one where none is configured", cur.Station.OutdoorModuleID)
+	}
+}
+
+// The client keeps nothing between calls: what it learns comes back in the
+// Station value, so there is no required order of calls.
+func TestClientCarriesNoStateBetweenCalls(t *testing.T) {
+	var gotDeviceIDs []string
+	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotDeviceIDs = append(gotDeviceIDs, r.URL.Query().Get("device_id"))
+		fmt.Fprint(w, stationsFixture)
+	})
+	c := newTestClient(t, h, "", "", "", "")
+
+	for i := 0; i < 2; i++ {
+		if _, err := c.GetCurrent(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i, id := range gotDeviceIDs {
+		if id != "" {
+			t.Errorf("request %d sent device_id=%q: a discovered ID must not leak into later calls", i, id)
+		}
 	}
 }
 
@@ -232,7 +269,7 @@ func TestGetCurrentReadsTheConfiguredModule(t *testing.T) {
 	body := stationsWith(t, func(dev map[string]any) {
 		second := map[string]any{
 			"_id": "02:00:00:00:00:02", "type": "NAModule1", "module_name": "Shed", "reachable": true,
-			"dashboard_data": map[string]any{"Temperature": 5.5, "Humidity": 70},
+			"dashboard_data": map[string]any{"time_utc": 1780999800, "Temperature": 5.5, "Humidity": 70},
 		}
 		dev["modules"] = append(dev["modules"].([]any), second)
 	})
@@ -280,8 +317,91 @@ func TestObservationLeavesRainToTheHourlyHistory(t *testing.T) {
 	if obs.Rain != 0 {
 		t.Errorf("Rain = %v, want 0 (the clock-hour total comes from history)", obs.Rain)
 	}
-	if obs.Timestamp != 1781000000 || obs.Temperature != 16.6 || obs.Humidity != 84 || obs.WindSpeed != 3 || obs.WindAngle != 102 {
+	// Stamped with the outdoor module's own time, not the base station's.
+	if obs.Timestamp != 1780999900 || obs.Temperature != 16.6 || obs.Humidity != 84 || obs.WindSpeed != 3 || obs.WindAngle != 102 {
 		t.Errorf("Observation = %+v", obs)
+	}
+	if want := FieldOutdoor | FieldWind; obs.Has != want {
+		t.Errorf("Has = %b, want %b (outdoor + wind, no rain)", obs.Has, want)
+	}
+}
+
+func TestObservationOmitsWindWhenTheWindModuleIsOffline(t *testing.T) {
+	body := stationsWith(t, func(dev map[string]any) {
+		moduleOfType(dev, "NAModule2")["reachable"] = false
+	})
+	c := newTestClient(t, serveStations(body), "", "", "", "")
+	cur, err := c.GetCurrent()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if cur.WindAvailable {
+		t.Error("WindAvailable = true for an unreachable wind module")
+	}
+	obs, ok := cur.Observation()
+	if !ok {
+		t.Fatal("outdoor is fine; Observation() should be ok")
+	}
+	if obs.Has != FieldOutdoor {
+		t.Errorf("Has = %b, want outdoor only, so a stored wind value isn't overwritten with a calm", obs.Has)
+	}
+}
+
+// A module that has gone quiet leaves its last values on the dashboard while
+// the base station keeps ticking, so the reading has to carry the module's
+// time, not the base's.
+func TestQuietOutdoorModuleKeepsItsOwnOldTimestamp(t *testing.T) {
+	body := stationsWith(t, func(dev map[string]any) {
+		// The base reports "now" (1781000000); the outdoor module last
+		// measured three hours earlier but is still flagged reachable.
+		moduleOfType(dev, "NAModule1")["dashboard_data"].(map[string]any)["time_utc"] = float64(1781000000 - 3*3600)
+	})
+	c := newTestClient(t, serveStations(body), "", "", "", "")
+	cur, err := c.GetCurrent()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	obs, ok := cur.Observation()
+	if !ok {
+		t.Fatal("Observation() not ok")
+	}
+	if obs.Timestamp != 1781000000-3*3600 {
+		t.Errorf("Timestamp = %d, want the module's three-hours-old time, not the base's", obs.Timestamp)
+	}
+	if cur.Timestamp != 1781000000 {
+		t.Errorf("base Timestamp = %d, want it untouched", cur.Timestamp)
+	}
+}
+
+func TestOutdoorTimeFallsBackToLastSeenAndOtherwiseIsUnavailable(t *testing.T) {
+	// No time_utc in the module's dashboard data: use when the base last
+	// heard from it.
+	body := stationsWith(t, func(dev map[string]any) {
+		delete(moduleOfType(dev, "NAModule1")["dashboard_data"].(map[string]any), "time_utc")
+	})
+	c := newTestClient(t, serveStations(body), "", "", "", "")
+	cur, err := c.GetCurrent()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cur.OutdoorAvailable || cur.OutdoorTimestamp != 1781000000 {
+		t.Errorf("available=%v OutdoorTimestamp=%d, want true / last_seen 1781000000", cur.OutdoorAvailable, cur.OutdoorTimestamp)
+	}
+
+	// Neither: the reading can't be dated, so it isn't used.
+	body = stationsWith(t, func(dev map[string]any) {
+		mod := moduleOfType(dev, "NAModule1")
+		delete(mod["dashboard_data"].(map[string]any), "time_utc")
+		delete(mod, "last_seen")
+	})
+	c = newTestClient(t, serveStations(body), "", "", "", "")
+	if cur, err = c.GetCurrent(); err != nil {
+		t.Fatal(err)
+	}
+	if cur.OutdoorAvailable {
+		t.Error("OutdoorAvailable = true for a reading with no measurement time at all")
 	}
 }
 
@@ -296,56 +416,6 @@ func TestGetCurrentRecordsWhenItWasFetched(t *testing.T) {
 	}
 	if cur.FetchedAt.Before(before) || cur.FetchedAt.After(after) {
 		t.Errorf("FetchedAt = %v, want within [%v, %v]", cur.FetchedAt, before, after)
-	}
-	if latest, _ := c.Latest(); !latest.FetchedAt.Equal(cur.FetchedAt) {
-		t.Errorf("Latest().FetchedAt = %v, want %v", latest.FetchedAt, cur.FetchedAt)
-	}
-}
-
-func TestLatest(t *testing.T) {
-	c := newTestClient(t, serveStations(stationsFixture), "", "", "", "")
-
-	if cur, ok := c.Latest(); ok || cur != nil {
-		t.Fatalf("Latest before any fetch = (%v, %v), want (nil, false)", cur, ok)
-	}
-
-	if _, err := c.GetCurrent(); err != nil {
-		t.Fatal(err)
-	}
-	cur, ok := c.Latest()
-	if !ok || cur.OutdoorTemp != 16.6 {
-		t.Fatalf("Latest = (%+v, %v)", cur, ok)
-	}
-
-	// Callers get a copy, so they can't corrupt what other readers see.
-	cur.OutdoorTemp = 99
-	cur.Modules[0].Name = "mutated"
-	again, _ := c.Latest()
-	if again.OutdoorTemp != 16.6 || again.Modules[0].Name != "Outdoor" {
-		t.Errorf("Latest was mutated through a returned copy: %+v", again)
-	}
-}
-
-func TestFailedFetchKeepsThePreviousLatest(t *testing.T) {
-	fail := false
-	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if fail {
-			http.Error(w, "boom", http.StatusBadGateway)
-			return
-		}
-		fmt.Fprint(w, stationsFixture)
-	})
-	c := newTestClient(t, h, "", "", "", "")
-	if _, err := c.GetCurrent(); err != nil {
-		t.Fatal(err)
-	}
-
-	fail = true
-	if _, err := c.GetCurrent(); err == nil {
-		t.Fatal("GetCurrent succeeded against a failing upstream")
-	}
-	if cur, ok := c.Latest(); !ok || cur.OutdoorTemp != 16.6 {
-		t.Errorf("Latest after a failed fetch = (%+v, %v), want the earlier reading", cur, ok)
 	}
 }
 
@@ -372,7 +442,7 @@ func TestGetMeasuresParsesStepsAndSkipsMissingTemperature(t *testing.T) {
 
 	from := time.Unix(1780000000, 0)
 	to := time.Unix(1780010000, 0)
-	obs, err := c.GetMeasures("02:00:00:00:00:01", []string{"Temperature", "Humidity"}, from, to)
+	obs, err := c.GetMeasures("70:ee:50:00:00:01", "02:00:00:00:00:01", []string{"Temperature", "Humidity"}, from, to)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -386,6 +456,11 @@ func TestGetMeasuresParsesStepsAndSkipsMissingTemperature(t *testing.T) {
 	}
 	if obs[1].Timestamp != 1780000800+2*3600 || obs[1].Temperature != 11.25 || obs[1].Humidity != 79 {
 		t.Errorf("obs[1] = %+v", obs[1])
+	}
+	for i, o := range obs {
+		if o.Has != FieldOutdoor {
+			t.Errorf("obs[%d].Has = %b, want outdoor", i, o.Has)
+		}
 	}
 
 	want := map[string]string{
@@ -417,9 +492,10 @@ func TestGetHistoryMergesWindAndRainByTimestamp(t *testing.T) {
 			t.Errorf("unexpected module %q", r.PostForm.Get("module_id"))
 		}
 	})
-	c := newTestClient(t, h, "70:ee:50:00:00:01", "02:00:00:00:00:01", "06:00:00:00:00:01", "05:00:00:00:00:01")
+	c := newTestClient(t, h, "", "", "", "")
+	st := Station{ID: "70:ee:50:00:00:01", OutdoorModuleID: "02:00:00:00:00:01", WindModuleID: "06:00:00:00:00:01", RainModuleID: "05:00:00:00:00:01"}
 
-	obs, err := c.GetHistory(time.Unix(1780000000, 0), time.Unix(1780010000, 0))
+	obs, err := c.GetHistory(st, time.Unix(1780000000, 0), time.Unix(1780010000, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -427,11 +503,86 @@ func TestGetHistoryMergesWindAndRainByTimestamp(t *testing.T) {
 		t.Fatalf("got %d observations, want 2", len(obs))
 	}
 	first, second := obs[0], obs[1]
-	if first.WindSpeed != 0 || first.Rain != 0.4 {
-		t.Errorf("first = %+v: no wind sample at that hour, rain 0.4", first)
+	if first.Rain != 0.4 {
+		t.Errorf("first = %+v: rain 0.4", first)
 	}
 	if second.WindSpeed != 7 || second.WindAngle != 200 || second.GustSpeed != 15 || second.GustAngle != 210 {
 		t.Errorf("second = %+v: want the wind sample merged in", second)
+	}
+
+	// There is no wind aggregate for the first hour. It must say so, rather
+	// than present a 0 km/h calm as if it had been measured.
+	if first.Has != FieldOutdoor|FieldRain {
+		t.Errorf("first.Has = %b, want outdoor+rain (no wind)", first.Has)
+	}
+	if second.Has != FieldsAll {
+		t.Errorf("second.Has = %b, want all groups", second.Has)
+	}
+}
+
+func TestGetHistoryTreatsNullWindAsMissingNotCalm(t *testing.T) {
+	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		switch r.PostForm.Get("module_id") {
+		case "02:00:00:00:00:01":
+			fmt.Fprint(w, `{"body":[{"beg_time":1780000800,"step_time":3600,"value":[[10,80],[11,81],[12,82]]}]}`)
+		case "06:00:00:00:00:01":
+			// Hour 0: wind null. Hour 1: a real, genuine calm. Hour 2: the
+			// gust half of the row is null, so the group is incomplete.
+			fmt.Fprint(w, `{"body":[{"beg_time":1780000800,"step_time":3600,"value":[[null,null,null,null],[0,0,0,0],[6,90,null,null]]}]}`)
+		}
+	})
+	c := newTestClient(t, h, "", "", "", "")
+	st := Station{ID: "70:ee:50:00:00:01", OutdoorModuleID: "02:00:00:00:00:01", WindModuleID: "06:00:00:00:00:01"}
+
+	obs, err := c.GetHistory(st, time.Unix(1780000000, 0), time.Unix(1780010000, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(obs) != 3 {
+		t.Fatalf("got %d observations, want 3", len(obs))
+	}
+	wantHas := []Fields{FieldOutdoor, FieldOutdoor | FieldWind, FieldOutdoor}
+	for i, want := range wantHas {
+		if obs[i].Has != want {
+			t.Errorf("obs[%d].Has = %b, want %b", i, obs[i].Has, want)
+		}
+	}
+	// A real calm is a measurement; it is kept.
+	if obs[1].WindSpeed != 0 || obs[1].Has&FieldWind == 0 {
+		t.Errorf("obs[1] = %+v: a genuine 0 km/h must stay a measured calm", obs[1])
+	}
+}
+
+func TestGetMeasuresTreatsShortRowsAsMissing(t *testing.T) {
+	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The second row has temperature only; humidity is missing entirely.
+		fmt.Fprint(w, `{"body":[{"beg_time":1780000800,"step_time":3600,"value":[[10,80],[11]]}]}`)
+	})
+	c := newTestClient(t, h, "", "", "", "")
+
+	obs, err := c.GetMeasures("70:ee:50:00:00:01", "02:00:00:00:00:01", []string{"Temperature", "Humidity"}, time.Unix(1780000000, 0), time.Unix(1780010000, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(obs) != 1 {
+		t.Fatalf("got %d observations %+v, want only the complete row", len(obs), obs)
+	}
+}
+
+func TestGetHistoryRefusesAStationWithNoOutdoorModule(t *testing.T) {
+	called := false
+	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { called = true })
+	c := newTestClient(t, h, "", "", "", "")
+
+	// Without a module ID, getmeasure would answer for the indoor base
+	// station, which would then be stored as outdoor history.
+	_, err := c.GetHistory(Station{ID: "70:ee:50:00:00:01"}, time.Unix(1780000000, 0), time.Unix(1780010000, 0))
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if called {
+		t.Error("the API was called without an outdoor module to ask about")
 	}
 }
 
@@ -469,7 +620,15 @@ func TestOversizedResponsesAreRejected(t *testing.T) {
 }
 
 func TestClientIsSafeForConcurrentUse(t *testing.T) {
-	c := newTestClient(t, serveStations(stationsFixture), "", "", "", "")
+	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/getmeasure") {
+			fmt.Fprint(w, `{"body":[{"beg_time":1780000800,"step_time":3600,"value":[[10,80]]}]}`)
+			return
+		}
+		fmt.Fprint(w, stationsFixture)
+	})
+	c := newTestClient(t, h, "", "", "", "")
+	st := Station{ID: "70:ee:50:00:00:01", OutdoorModuleID: "02:00:00:00:00:01"}
 
 	var wg sync.WaitGroup
 	for i := 0; i < 8; i++ {
@@ -485,11 +644,11 @@ func TestClientIsSafeForConcurrentUse(t *testing.T) {
 		}()
 		go func() {
 			defer wg.Done()
-			for j := 0; j < 200; j++ {
-				c.Latest()
-				c.Location()
-				c.StationID()
-				c.Timezone()
+			for j := 0; j < 20; j++ {
+				if _, err := c.GetHistory(st, time.Unix(1780000000, 0), time.Unix(1780010000, 0)); err != nil {
+					t.Error(err)
+					return
+				}
 			}
 		}()
 	}

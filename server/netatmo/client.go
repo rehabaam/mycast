@@ -2,13 +2,13 @@ package netatmo
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -24,100 +24,81 @@ const (
 	maxErrorBodyBytes = 256
 )
 
-// Client wraps an authenticated HTTP client for Netatmo API calls. It is safe
-// for concurrent use.
+// Config holds the station and module IDs to use instead of auto-discovered
+// ones. Any may be empty.
+type Config struct {
+	StationID       string
+	OutdoorModuleID string
+	WindModuleID    string
+	RainModuleID    string
+}
+
+// Client wraps an authenticated HTTP client for Netatmo API calls.
+//
+// It holds no state of its own beyond its configuration, so it is safe for
+// concurrent use and its methods can be called in any order. What it learns
+// about the station comes back as a Station value (see Current.Station),
+// which history calls take as an argument: where to cache a reading, and for
+// how long it is trusted, is the caller's decision.
 type Client struct {
 	http    *http.Client
 	baseURL string
-
-	// mu guards everything below: IDs and location are discovered lazily by
-	// GetCurrent, which runs from the scheduler, and latest is read by the
-	// API handlers.
-	mu              sync.RWMutex
-	stationID       string
-	outdoorModuleID string
-	windModuleID    string
-	rainModuleID    string
-
-	lat, lon    float64
-	hasLocation bool
-	timezone    string
-
-	latest *Current
+	cfg     Config
 }
 
-func NewClient(
-	httpClient *http.Client,
-	stationID, outdoorModuleID, windModuleID, rainModuleID string,
-) *Client {
-	return &Client{
-		http:            httpClient,
-		baseURL:         defaultBaseURL,
-		stationID:       stationID,
-		outdoorModuleID: outdoorModuleID,
-		windModuleID:    windModuleID,
-		rainModuleID:    rainModuleID,
+func NewClient(httpClient *http.Client, cfg Config) *Client {
+	return &Client{http: httpClient, baseURL: defaultBaseURL, cfg: cfg}
+}
+
+// discoverStation resolves the station's identity: configured values win, and
+// anything left blank is taken from the response.
+func discoverStation(cfg Config, dev Device) Station {
+	st := Station{
+		ID:              firstNonEmpty(cfg.StationID, dev.ID),
+		OutdoorModuleID: cfg.OutdoorModuleID,
+		WindModuleID:    cfg.WindModuleID,
+		RainModuleID:    cfg.RainModuleID,
+		Timezone:        dev.Place.Timezone,
 	}
-}
-
-// ids returns a consistent snapshot of the configured or discovered IDs.
-func (c *Client) ids() (station, outdoor, wind, rain string) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.stationID, c.outdoorModuleID, c.windModuleID, c.rainModuleID
-}
-
-// StationID returns the configured station ID, or the one discovered from the
-// most recent GetCurrent call. It is empty until one of those has happened.
-func (c *Client) StationID() string {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.stationID
-}
-
-// Location returns the station's registered coordinates, discovered from the
-// most recent GetCurrent call. ok is false until GetCurrent has succeeded at
-// least once.
-func (c *Client) Location() (lat, lon float64, ok bool) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.lat, c.lon, c.hasLocation
-}
-
-// Timezone returns the station's IANA timezone name (e.g. "Europe/Helsinki"),
-// or "" if it is not known.
-func (c *Client) Timezone() string {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.timezone
-}
-
-// Latest returns a copy of the reading from the most recent successful
-// GetCurrent call, without contacting Netatmo. ok is false until one has
-// succeeded.
-func (c *Client) Latest() (cur *Current, ok bool) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	if c.latest == nil {
-		return nil, false
+	if dev.Place.Location != [2]float64{} {
+		st.Lon, st.Lat = dev.Place.Location[0], dev.Place.Location[1]
+		st.HasLocation = true
 	}
-	return c.latest.clone(), true
+
+	// For each module type, the first module in the response fills a blank.
+	for _, mod := range dev.Modules {
+		switch mod.Type {
+		case "NAModule1":
+			if st.OutdoorModuleID == "" {
+				st.OutdoorModuleID = mod.ID
+			}
+		case "NAModule2":
+			if st.WindModuleID == "" {
+				st.WindModuleID = mod.ID
+			}
+		case "NAModule3":
+			if st.RainModuleID == "" {
+				st.RainModuleID = mod.ID
+			}
+		}
+	}
+	return st
 }
 
-func (cur *Current) clone() *Current {
-	cp := *cur
-	cp.Modules = append([]ModuleStatus{}, cur.Modules...)
-	return &cp
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
-// GetCurrent fetches live readings for all modules and remembers the result
-// for Latest.
+// GetCurrent fetches live readings for all modules.
 func (c *Client) GetCurrent() (*Current, error) {
-	stationID, outdoorID, windID, rainID := c.ids()
-
 	params := url.Values{}
-	if stationID != "" {
-		params.Set("device_id", stationID)
+	if c.cfg.StationID != "" {
+		params.Set("device_id", c.cfg.StationID)
 	}
 
 	body, err := c.get("getstationsdata", params)
@@ -134,8 +115,10 @@ func (c *Client) GetCurrent() (*Current, error) {
 	}
 
 	dev := resp.Body.Devices[0]
+	st := discoverStation(c.cfg, dev)
 	cur := &Current{
 		FetchedAt:      time.Now(),
+		Station:        st,
 		Timestamp:      dev.DashboardData.TimeUTC,
 		IndoorTemp:     dev.DashboardData.Temperature,
 		IndoorHumidity: dev.DashboardData.Humidity,
@@ -145,28 +128,27 @@ func (c *Client) GetCurrent() (*Current, error) {
 		Modules:        []ModuleStatus{},
 	}
 
-	// The first module of each type that matches its configured ID (if any)
-	// supplies the reading, so live readings and history come from the same
-	// module.
-	var seenOutdoor, seenWind, seenRain bool
-	matches := func(mod Module, configured string) bool {
-		return configured == "" || mod.ID == configured
-	}
-
 	for _, mod := range dev.Modules {
 		d := mod.DashboardData
 		switch mod.Type {
 		case "NAModule1": // outdoor
-			if seenOutdoor || !matches(mod, outdoorID) {
+			if mod.ID != st.OutdoorModuleID {
 				break
 			}
-			seenOutdoor = true
 			temp, okT := floatVal(d, "Temperature")
 			hum, okH := floatVal(d, "Humidity")
-			if !mod.Reachable || !okT || !okH {
+			// The module's own measurement time. Falling back to when the
+			// base last heard from it still dates the reading to the module,
+			// not to the base's own clock.
+			at, okAt := floatVal(d, "time_utc")
+			if !okAt && mod.LastSeen > 0 {
+				at, okAt = float64(mod.LastSeen), true
+			}
+			if !mod.Reachable || !okT || !okH || !okAt {
 				break
 			}
 			cur.OutdoorAvailable = true
+			cur.OutdoorTimestamp = int64(at)
 			cur.OutdoorTemp, cur.OutdoorHumidity = temp, hum
 			cur.TodayOutdoorMinC, _ = floatVal(d, "min_temp")
 			cur.TodayOutdoorMaxC, _ = floatVal(d, "max_temp")
@@ -174,19 +156,22 @@ func (c *Client) GetCurrent() (*Current, error) {
 			maxAt, _ := floatVal(d, "date_max_temp")
 			cur.TodayOutdoorMinAt, cur.TodayOutdoorMaxAt = int64(minAt), int64(maxAt)
 		case "NAModule2": // wind
-			if seenWind || !matches(mod, windID) {
+			if mod.ID != st.WindModuleID {
 				break
 			}
-			seenWind = true
-			cur.WindSpeed, _ = floatVal(d, "WindStrength")
-			cur.WindAngle, _ = floatVal(d, "WindAngle")
+			speed, okS := floatVal(d, "WindStrength")
+			angle, okA := floatVal(d, "WindAngle")
+			if !mod.Reachable || !okS || !okA {
+				break
+			}
+			cur.WindAvailable = true
+			cur.WindSpeed, cur.WindAngle = speed, angle
 			cur.GustSpeed, _ = floatVal(d, "GustStrength")
 			cur.GustAngle, _ = floatVal(d, "GustAngle")
 		case "NAModule3": // rain
-			if seenRain || !matches(mod, rainID) {
+			if mod.ID != st.RainModuleID {
 				break
 			}
-			seenRain = true
 			cur.Rain, _ = floatVal(d, "Rain")
 			cur.SumRain1h, _ = floatVal(d, "sum_rain_1")
 			cur.SumRain24h, _ = floatVal(d, "sum_rain_24")
@@ -202,54 +187,30 @@ func (c *Client) GetCurrent() (*Current, error) {
 		})
 	}
 
-	// Auto-discover IDs, location and timezone from the API response when not
-	// configured.
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.stationID == "" {
-		c.stationID = dev.ID
-	}
-	if !c.hasLocation && dev.Place.Location != [2]float64{} {
-		c.lon, c.lat = dev.Place.Location[0], dev.Place.Location[1]
-		c.hasLocation = true
-	}
-	if c.timezone == "" {
-		c.timezone = dev.Place.Timezone
-	}
-	discovered := map[string]bool{}
-	for _, mod := range dev.Modules {
-		if discovered[mod.Type] {
-			continue
-		}
-		switch mod.Type {
-		case "NAModule1":
-			if c.outdoorModuleID == "" {
-				c.outdoorModuleID = mod.ID
-			}
-		case "NAModule2":
-			if c.windModuleID == "" {
-				c.windModuleID = mod.ID
-			}
-		case "NAModule3":
-			if c.rainModuleID == "" {
-				c.rainModuleID = mod.ID
-			}
-		}
-		discovered[mod.Type] = true
-	}
-
-	c.latest = cur.clone()
 	return cur, nil
 }
 
-// GetMeasures fetches hourly historical data for the requested module and types.
-// Returns a slice of Observations ordered by ascending timestamp. Steps where
-// the API reports no temperature or humidity are dropped rather than stored
-// as zeros.
-func (c *Client) GetMeasures(moduleID string, types []string, from, to time.Time) ([]Observation, error) {
-	stationID, _, _, _ := c.ids()
+// measureGroup maps a getmeasure type to the group of fields it belongs to.
+var measureGroup = map[string]Fields{
+	"Temperature":  FieldOutdoor,
+	"Humidity":     FieldOutdoor,
+	"WindStrength": FieldWind,
+	"WindAngle":    FieldWind,
+	"GustStrength": FieldWind,
+	"GustAngle":    FieldWind,
+	"Rain":         FieldRain,
+}
+
+// GetMeasures fetches hourly historical data for one module of a station.
+// Returns Observations ordered by ascending timestamp.
+//
+// A group of requested types counts as present (Observation.Has) only if the
+// API reported a value for every type in it. Steps where no group is present
+// are dropped, so a gap in Netatmo's data is never turned into zeros, and a
+// caller can tell the groups it did get apart from the ones it didn't.
+func (c *Client) GetMeasures(deviceID, moduleID string, types []string, from, to time.Time) ([]Observation, error) {
 	params := url.Values{
-		"device_id":  {stationID},
+		"device_id":  {deviceID},
 		"scale":      {"1hour"},
 		"type":       {joinTypes(types)},
 		"date_begin": {strconv.FormatInt(from.Unix(), 10)},
@@ -274,18 +235,18 @@ func (c *Client) GetMeasures(moduleID string, types []string, from, to time.Time
 	var obs []Observation
 	for _, seg := range resp.Body {
 		for i, vals := range seg.Value {
-			ts := seg.BegTime + int64(i)*seg.StepTime
-			o := Observation{Timestamp: ts}
-			complete := true
+			o := Observation{Timestamp: seg.BegTime + int64(i)*seg.StepTime}
+			var requested, missing Fields
 			for j, t := range types {
-				if j >= len(vals) {
-					break
+				group := measureGroup[t]
+				requested |= group
+
+				var v *float64
+				if j < len(vals) {
+					v = vals[j]
 				}
-				v := vals[j]
 				if v == nil {
-					if t == "Temperature" || t == "Humidity" {
-						complete = false
-					}
+					missing |= group
 					continue
 				}
 				switch t {
@@ -305,7 +266,7 @@ func (c *Client) GetMeasures(moduleID string, types []string, from, to time.Time
 					o.Rain = *v
 				}
 			}
-			if complete {
+			if o.Has = requested &^ missing; o.Has != 0 {
 				obs = append(obs, o)
 			}
 		}
@@ -314,11 +275,18 @@ func (c *Client) GetMeasures(moduleID string, types []string, from, to time.Time
 	return obs, nil
 }
 
-// GetHistory fetches all variables for all configured modules over the given period.
-func (c *Client) GetHistory(from, to time.Time) ([]Observation, error) {
-	_, outdoorID, windID, rainID := c.ids()
+// GetHistory fetches hourly history for the station's modules over the given
+// period. Every observation says which of its field groups Netatmo actually
+// supplied (Has): an hour with temperature but no wind aggregate has
+// FieldOutdoor only, rather than a made-up calm.
+func (c *Client) GetHistory(st Station, from, to time.Time) ([]Observation, error) {
+	if st.OutdoorModuleID == "" {
+		// Without a module ID getmeasure answers for the indoor base station,
+		// which would then be stored as outdoor history.
+		return nil, errors.New("station has no outdoor module")
+	}
 
-	outdoorObs, err := c.GetMeasures(outdoorID, []string{"Temperature", "Humidity"}, from, to)
+	outdoorObs, err := c.GetMeasures(st.ID, st.OutdoorModuleID, []string{"Temperature", "Humidity"}, from, to)
 	if err != nil {
 		return nil, fmt.Errorf("outdoor measures: %w", err)
 	}
@@ -326,33 +294,34 @@ func (c *Client) GetHistory(from, to time.Time) ([]Observation, error) {
 	// Merge wind and rain into outdoor observations by timestamp.
 	index := make(map[int64]*Observation, len(outdoorObs))
 	for i := range outdoorObs {
-		ts := outdoorObs[i].Timestamp
-		index[ts] = &outdoorObs[i]
+		index[outdoorObs[i].Timestamp] = &outdoorObs[i]
 	}
 
-	if windID != "" {
-		windObs, err := c.GetMeasures(windID, []string{"WindStrength", "WindAngle", "GustStrength", "GustAngle"}, from, to)
+	if st.WindModuleID != "" {
+		windObs, err := c.GetMeasures(st.ID, st.WindModuleID, []string{"WindStrength", "WindAngle", "GustStrength", "GustAngle"}, from, to)
 		if err != nil {
 			return nil, fmt.Errorf("wind measures: %w", err)
 		}
+		// GetMeasures only returns steps whose group was fully reported, so
+		// every row here is a real wind measurement.
 		for _, w := range windObs {
 			if o, ok := index[w.Timestamp]; ok {
-				o.WindSpeed = w.WindSpeed
-				o.WindAngle = w.WindAngle
-				o.GustSpeed = w.GustSpeed
-				o.GustAngle = w.GustAngle
+				o.WindSpeed, o.WindAngle = w.WindSpeed, w.WindAngle
+				o.GustSpeed, o.GustAngle = w.GustSpeed, w.GustAngle
+				o.Has |= FieldWind
 			}
 		}
 	}
 
-	if rainID != "" {
-		rainObs, err := c.GetMeasures(rainID, []string{"Rain"}, from, to)
+	if st.RainModuleID != "" {
+		rainObs, err := c.GetMeasures(st.ID, st.RainModuleID, []string{"Rain"}, from, to)
 		if err != nil {
 			return nil, fmt.Errorf("rain measures: %w", err)
 		}
 		for _, r := range rainObs {
 			if o, ok := index[r.Timestamp]; ok {
 				o.Rain = r.Rain
+				o.Has |= FieldRain
 			}
 		}
 	}

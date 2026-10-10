@@ -5,6 +5,8 @@ import (
 	"log"
 	"net/http"
 	"time"
+
+	"github.com/rehabaam/mycast/netatmo"
 )
 
 type healthResponse struct {
@@ -26,10 +28,20 @@ func (s *Server) handleCurrent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The reading is cached, so a run of failed fetches would otherwise keep
-	// serving the last good one as if it were current. Say so instead.
-	stale := s.now().Sub(cur.FetchedAt) > s.staleAfter
-	writeJSON(w, http.StatusOK, newCurrentResponse(cur, stale))
+	writeJSON(w, http.StatusOK, newCurrentResponse(cur, s.isStale(cur)))
+}
+
+// isStale reports whether the cached reading should not be presented as
+// current. There are two ways for that to happen, and both have to be checked:
+// fetches from Netatmo may be failing, so the cached reading is old (FetchedAt);
+// or fetches may succeed while the outdoor module itself has gone quiet, so
+// the service keeps re-fetching the same old measurement (OutdoorTimestamp).
+func (s *Server) isStale(cur *netatmo.Current) bool {
+	now := s.now()
+	if now.Sub(cur.FetchedAt) > s.staleAfter {
+		return true
+	}
+	return cur.OutdoorAvailable && now.Sub(time.Unix(cur.OutdoorTimestamp, 0)) > s.staleAfter
 }
 
 func (s *Server) handleForecast(w http.ResponseWriter, r *http.Request) {

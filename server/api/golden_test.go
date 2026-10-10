@@ -55,6 +55,7 @@ func TestGoldenCurrentStale(t *testing.T) {
 func TestGoldenCurrentOutdoorOffline(t *testing.T) {
 	cur := sampleCurrent()
 	cur.OutdoorAvailable = false
+	cur.OutdoorTimestamp = 0
 	cur.OutdoorTemp, cur.OutdoorHumidity = 0, 0
 	cur.Modules[0].Reachable = false
 	checkGolden(t, "current_outdoor_offline.json", newCurrentResponse(cur, false))

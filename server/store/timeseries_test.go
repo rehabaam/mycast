@@ -224,3 +224,175 @@ func TestHourStart(t *testing.T) {
 		}
 	}
 }
+
+// obsFields builds a partial observation: only the named groups are real.
+func obsFields(ts int64, has netatmo.Fields, temp, wind, rain float64) netatmo.Observation {
+	return netatmo.Observation{Timestamp: ts, Temperature: temp, WindSpeed: wind, Rain: rain, Has: has}
+}
+
+func onlyHour(t *testing.T, ts *TimeSeries) netatmo.Observation {
+	t.Helper()
+	all := ts.All()
+	if len(all) != 1 {
+		t.Fatalf("store has %d observations, want 1", len(all))
+	}
+	return all[0]
+}
+
+// The reported bug: reconciling history replaced the whole stored record, so
+// an hour with no wind aggregate wiped a good live wind value to zero.
+func TestBackfillWithoutWindKeepsTheStoredWind(t *testing.T) {
+	ts := NewTimeSeries(10)
+	ts.Append(obsFields(hourTS(0, 600), netatmo.FieldOutdoor|netatmo.FieldWind, 12, 14, 0))
+
+	// History for the same hour has temperature and rain but no wind.
+	ts.Backfill(obsFields(hourTS(0, 1800), netatmo.FieldOutdoor|netatmo.FieldRain, 13, 0, 0.6))
+
+	got := onlyHour(t, ts)
+	if got.WindSpeed != 14 {
+		t.Errorf("WindSpeed = %v, want the stored 14 (history had no wind)", got.WindSpeed)
+	}
+	if got.Temperature != 13 || got.Rain != 0.6 {
+		t.Errorf("Temperature=%v Rain=%v, want 13 / 0.6 from history", got.Temperature, got.Rain)
+	}
+}
+
+func TestBackfillWithWindOverwritesTheStoredWind(t *testing.T) {
+	ts := NewTimeSeries(10)
+	ts.Append(obsFields(hourTS(0, 600), netatmo.FieldOutdoor|netatmo.FieldWind, 12, 14, 0))
+	ts.Backfill(obsFields(hourTS(0, 1800), netatmo.FieldWind, 0, 9, 0))
+
+	got := onlyHour(t, ts)
+	if got.WindSpeed != 9 {
+		t.Errorf("WindSpeed = %v, want history's 9", got.WindSpeed)
+	}
+	if got.Temperature != 12 {
+		t.Errorf("Temperature = %v, want the stored 12 untouched", got.Temperature)
+	}
+}
+
+// A measured calm is data, unlike a missing value.
+func TestAMeasuredCalmOverwritesWind(t *testing.T) {
+	ts := NewTimeSeries(10)
+	ts.Append(obsFields(hourTS(0, 600), netatmo.FieldOutdoor|netatmo.FieldWind, 12, 14, 0))
+	ts.Backfill(obsFields(hourTS(0, 1800), netatmo.FieldWind, 0, 0, 0))
+
+	if got := onlyHour(t, ts).WindSpeed; got != 0 {
+		t.Errorf("WindSpeed = %v, want 0: a measured calm replaces the stored value", got)
+	}
+}
+
+// A live reading in the hour that history already reconciled must not wipe
+// the reconciled rain, since live readings carry no rain.
+func TestLiveReadingDoesNotWipeReconciledRain(t *testing.T) {
+	ts := NewTimeSeries(10)
+	ts.Backfill(obsFields(hourTS(0, 1800), netatmo.FieldOutdoor|netatmo.FieldWind|netatmo.FieldRain, 11, 5, 0.8))
+	ts.Append(obsFields(hourTS(0, 3000), netatmo.FieldOutdoor|netatmo.FieldWind, 12, 7, 0))
+
+	got := onlyHour(t, ts)
+	if got.Rain != 0.8 {
+		t.Errorf("Rain = %v, want the reconciled 0.8", got.Rain)
+	}
+	if got.Temperature != 12 || got.WindSpeed != 7 {
+		t.Errorf("Temperature=%v WindSpeed=%v, want the live 12 / 7", got.Temperature, got.WindSpeed)
+	}
+}
+
+func TestInsertedPartialObservationRecordsWhatItHas(t *testing.T) {
+	ts := NewTimeSeries(10)
+	ts.Backfill(obsFields(hourTS(0, 0), netatmo.FieldOutdoor, 12, 0, 0))
+
+	got := onlyHour(t, ts)
+	if got.Has != netatmo.FieldOutdoor {
+		t.Errorf("Has = %b, want outdoor only", got.Has)
+	}
+	// A later wind reading fills it in.
+	ts.Backfill(obsFields(hourTS(0, 0), netatmo.FieldWind, 0, 8, 0))
+	if got = onlyHour(t, ts); got.Has != netatmo.FieldOutdoor|netatmo.FieldWind || got.WindSpeed != 8 || got.Temperature != 12 {
+		t.Errorf("after wind arrives: %+v", got)
+	}
+}
+
+// The reported masking: a module that has gone quiet is re-delivered with the
+// same measurement time while the base keeps the service ticking. That is not
+// the station reporting.
+func TestARepeatedMeasurementDoesNotRefreshUpdatedAt(t *testing.T) {
+	ts := NewTimeSeries(10)
+	ts.Append(obsTemp(hourTS(1, 600), 12))
+	first := ts.UpdatedAt()
+	if first.IsZero() {
+		t.Fatal("UpdatedAt not set by the first reading")
+	}
+
+	time.Sleep(15 * time.Millisecond)
+	ts.Append(obsTemp(hourTS(1, 600), 12)) // the very same measurement again
+	ts.Append(obsTemp(hourTS(1, 100), 12)) // an older measurement of the hour
+
+	if got := ts.UpdatedAt(); !got.Equal(first) {
+		t.Errorf("UpdatedAt moved from %v to %v with no newer measurement", first, got)
+	}
+}
+
+func TestANewerMeasurementAdvancesUpdatedAt(t *testing.T) {
+	ts := NewTimeSeries(10)
+	ts.Append(obsTemp(hourTS(1, 600), 12))
+	first := ts.UpdatedAt()
+
+	time.Sleep(15 * time.Millisecond)
+	ts.Append(obsTemp(hourTS(1, 1200), 13)) // same hour, ten minutes later
+
+	if got := ts.UpdatedAt(); !got.After(first) {
+		t.Errorf("UpdatedAt = %v, want after %v for a newer measurement", got, first)
+	}
+	if got := temps(ts); !equalFloats(got, []float64{13}) {
+		t.Errorf("temps = %v, want the newer reading [13]", got)
+	}
+}
+
+func TestAnOlderMeasurementOfTheSameHourDoesNotReplaceANewerOne(t *testing.T) {
+	ts := NewTimeSeries(10)
+	ts.Append(obsTemp(hourTS(1, 1200), 13))
+	ts.Append(obsTemp(hourTS(1, 100), 99))
+
+	if got := temps(ts); !equalFloats(got, []float64{13}) {
+		t.Errorf("temps = %v, want [13]: an older measurement must not win", got)
+	}
+}
+
+func TestCurrentCache(t *testing.T) {
+	var c CurrentCache
+	if cur, ok := c.Latest(); ok || cur != nil {
+		t.Fatalf("Latest on an empty cache = (%v, %v), want (nil, false)", cur, ok)
+	}
+
+	in := &netatmo.Current{OutdoorTemp: 16.6, Modules: []netatmo.ModuleStatus{{Name: "Outdoor"}}}
+	c.Put(in)
+
+	// The cache keeps its own copy, in both directions.
+	in.OutdoorTemp = 99
+	in.Modules[0].Name = "mutated by the writer"
+	got, ok := c.Latest()
+	if !ok || got.OutdoorTemp != 16.6 || got.Modules[0].Name != "Outdoor" {
+		t.Fatalf("Latest = (%+v, %v), want the value as it was Put", got, ok)
+	}
+	got.OutdoorTemp = 77
+	got.Modules[0].Name = "mutated by a reader"
+	if again, _ := c.Latest(); again.OutdoorTemp != 16.6 || again.Modules[0].Name != "Outdoor" {
+		t.Errorf("a reader's mutation leaked into the cache: %+v", again)
+	}
+}
+
+func TestCurrentCacheIsSafeForConcurrentUse(t *testing.T) {
+	var c CurrentCache
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 500; i++ {
+			c.Put(&netatmo.Current{OutdoorTemp: float64(i)})
+		}
+	}()
+	for i := 0; i < 500; i++ {
+		c.Latest()
+	}
+	<-done
+}

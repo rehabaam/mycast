@@ -264,24 +264,57 @@ func TestEngineFallsBackWhenForecastWindowHasMissingValues(t *testing.T) {
 	}
 }
 
+// A null in Open-Meteo's hindcast arrives as NaN. Where it lands on an hour the
+// station also observed, an unguarded fit would turn it into a NaN bias for
+// that hour-of-day and poison every forecast value in the bucket. The NaNs are
+// placed on the station's overlap (not on hours it never observed, which the
+// fit never reads), for all three corrected variables.
 func TestEngineIgnoresMissingHindcastValuesInBiasFit(t *testing.T) {
 	ts := store.NewTimeSeries(24 * 10)
-	stationHistory(ts, testNow, 72, 13.0, 80, 5.0)
+	// The station reads 3 °C warmer, 5 % drier and 3 km/h windier than the
+	// flat model (10 °C, 80 %, 5 km/h) at every hour of its last 3 days.
+	stationHistory(ts, testNow, 72, 13.0, 75, 8.0)
 
 	data := syntheticHourlyData(testNow, defaultPastDays, omForecastDaysBuffer)
-	// Knock out every hindcast temperature before the station history: a NaN
-	// there must be skipped, not fitted as a huge bias.
-	for i := 0; i < defaultPastDays*24-72; i++ {
+	// data.Time starts at hour(testNow) - 7 days; the station's 72 hours begin
+	// 3 days before testNow. Knock out the oldest of those three days: every
+	// hour-of-day still keeps two valid samples (minBiasSamples).
+	first := (defaultPastDays - 3) * 24
+	for i := first; i < first+24; i++ {
 		data.TemperatureC[i] = math.NaN()
+		data.HumidityPct[i] = math.NaN()
+		data.WindSpeedKmh[i] = math.NaN()
 	}
 	engine := newTestEngine(ts, Config{OpenMeteo: &fakeOMClient{data: data}, StaleAfter: time.Hour})
 
 	fc := engine.Compute()
+
 	if want := openmeteo.ModelName + "+local-bias-correction"; fc.Model != want {
 		t.Fatalf("Model = %q, want %q", fc.Model, want)
 	}
-	if got := fc.Days[0].Temperature.Hourly[0].Value; got < 12.5 || got > 13.5 {
-		t.Errorf("first hour temp = %.2f, want ~13.0", got)
+	// Written as an in-range check so that NaN fails it (NaN compares false).
+	inRange := func(v, want float64) bool { return v >= want-0.5 && v <= want+0.5 }
+	checked := 0
+	for di, day := range fc.Days {
+		for _, h := range day.Temperature.Hourly {
+			if !inRange(h.Value, 13) {
+				t.Errorf("Days[%d] temperature at %v = %v, want ~13 (bias learned from the remaining samples)", di, h.Time, h.Value)
+			}
+			checked++
+		}
+		for _, h := range day.Humidity.Hourly {
+			if !inRange(h.Value, 75) {
+				t.Errorf("Days[%d] humidity at %v = %v, want ~75", di, h.Time, h.Value)
+			}
+		}
+		for _, h := range day.Wind.Hourly {
+			if !inRange(h.SpeedKmh, 8) {
+				t.Errorf("Days[%d] wind at %v = %v, want ~8", di, h.Time, h.SpeedKmh)
+			}
+		}
+	}
+	if checked == 0 {
+		t.Fatal("no forecast hours were checked")
 	}
 }
 

@@ -34,6 +34,7 @@ func sampleCurrent() *netatmo.Current {
 	return &netatmo.Current{
 		FetchedAt:         sampleFetchedAt,
 		Timestamp:         1781000000,
+		OutdoorTimestamp:  sampleFetchedAt.Unix(),
 		OutdoorAvailable:  true,
 		OutdoorTemp:       16.6,
 		OutdoorHumidity:   84,
@@ -112,6 +113,7 @@ func TestCurrentUsesSnakeCaseWithUnitsAndNeverCallsUpstreamPerRequest(t *testing
 	want := map[string]any{
 		"timestamp":            "2026-06-09T10:13:20Z",
 		"fetched_at":           "2026-06-09T10:14:00Z",
+		"outdoor_timestamp":    "2026-06-09T10:14:00Z",
 		"stale":                false,
 		"outdoor_available":    true,
 		"outdoor_temp_c":       16.6,
@@ -175,6 +177,42 @@ func TestCurrentIsFlaggedStaleWhenRefreshesStopSucceeding(t *testing.T) {
 		if m["fetched_at"] != "2026-06-09T10:14:00Z" {
 			t.Errorf("%s: fetched_at = %v", c.name, m["fetched_at"])
 		}
+	}
+}
+
+// Fetches keep succeeding, so FetchedAt is fresh, but the outdoor module's
+// own measurement is hours old: the service is just re-reading the same
+// values. That is not a current reading.
+func TestCurrentIsFlaggedStaleWhenTheOutdoorModuleHasGoneQuiet(t *testing.T) {
+	cur := sampleCurrent()
+	cur.OutdoorTimestamp = sampleFetchedAt.Add(-3 * time.Hour).Unix()
+	cur.FetchedAt = sampleFetchedAt.Add(59 * time.Minute) // fetched a minute ago
+	s, _ := newTestServer(t, &fakeCurrent{cur: cur, ok: true})
+	s.now = func() time.Time { return sampleFetchedAt.Add(time.Hour) }
+
+	m := decode(t, do(t, s, http.MethodGet, "/current"))
+	if m["stale"] != true {
+		t.Errorf("stale = %v, want true: the outdoor measurement is 4h old", m["stale"])
+	}
+	if m["outdoor_timestamp"] != "2026-06-09T07:14:00Z" {
+		t.Errorf("outdoor_timestamp = %v, want the module's own (old) time", m["outdoor_timestamp"])
+	}
+}
+
+// An unavailable outdoor module is reported through outdoor_available, not by
+// an old measurement time that no longer means anything.
+func TestCurrentOmitsTheOutdoorTimestampWhenTheModuleIsUnavailable(t *testing.T) {
+	cur := sampleCurrent()
+	cur.OutdoorAvailable = false
+	cur.OutdoorTimestamp = 0
+	s, _ := newTestServer(t, &fakeCurrent{cur: cur, ok: true})
+
+	m := decode(t, do(t, s, http.MethodGet, "/current"))
+	if _, present := m["outdoor_timestamp"]; present {
+		t.Errorf("outdoor_timestamp = %v, want it omitted", m["outdoor_timestamp"])
+	}
+	if m["stale"] != false {
+		t.Errorf("stale = %v: an unavailable module is flagged by outdoor_available, not by 1970", m["stale"])
 	}
 }
 

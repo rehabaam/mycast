@@ -13,13 +13,20 @@ import (
 // separate from netatmo.Current, so upstream-facing types can change without
 // breaking API consumers.
 type currentResponse struct {
-	// Timestamp is when the station measured the reading; FetchedAt is when
-	// this service last retrieved it from Netatmo. Stale is true when
-	// FetchedAt is older than the staleness threshold, meaning refreshes are
-	// failing and everything below is the last good reading, not a current one.
+	// Timestamp is when the indoor base station measured its part of the
+	// reading; FetchedAt is when this service last retrieved it from Netatmo.
+	// Stale is true when FetchedAt is older than the staleness threshold
+	// (refreshes are failing) or the outdoor measurement itself is (the
+	// module has gone quiet): either way everything below is the last good
+	// reading, not a current one.
 	Timestamp time.Time `json:"timestamp"`
 	FetchedAt time.Time `json:"fetched_at"`
 	Stale     bool      `json:"stale"`
+
+	// OutdoorTimestamp is when the outdoor module took its measurement, which
+	// can be much older than Timestamp. Omitted when the outdoor module is
+	// unavailable.
+	OutdoorTimestamp *time.Time `json:"outdoor_timestamp,omitempty"`
 
 	// OutdoorAvailable is false when the outdoor module is missing or
 	// unreachable; the outdoor_* and apparent_temp_c values are then zero and
@@ -89,6 +96,7 @@ func newCurrentResponse(cur *netatmo.Current, stale bool) currentResponse {
 		Modules:            make([]moduleResponse, 0, len(cur.Modules)),
 	}
 	if cur.OutdoorAvailable {
+		resp.OutdoorTimestamp = optionalUnixTime(cur.OutdoorTimestamp)
 		resp.ApparentTempC = math.Round(forecast.ApparentTemperatureC(cur.OutdoorTemp, cur.OutdoorHumidity, cur.WindSpeed)*100) / 100
 	}
 	for _, m := range cur.Modules {
