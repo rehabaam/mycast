@@ -6,6 +6,10 @@
 	<string>$(MYCAST_API_BASE_URL)</string>
 	<key>MyCastAPIToken</key>
 	<string>$(MYCAST_API_TOKEN)</string>
+	<key>MyCastStationLatitude</key>
+	<string>$(MYCAST_STATION_LAT)</string>
+	<key>MyCastStationLongitude</key>
+	<string>$(MYCAST_STATION_LON)</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsLocalNetworking</key>

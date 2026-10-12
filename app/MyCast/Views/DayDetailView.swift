@@ -11,6 +11,10 @@ import Charts
 struct DayDetailView: View {
     let day: DayForecast
 
+    @State private var selectedTemperatureTime: Date?
+    @State private var selectedPrecipitationTime: Date?
+    @State private var selectedAuroraTime: Date?
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
@@ -76,6 +80,24 @@ struct DayDetailView: View {
             + day.temperature.apparentHourly.map { TemperatureSeriesPoint(time: $0.time, value: $0.value, series: "Feels like") }
     }
 
+    private var temperatureSamples: [TemperatureSample] {
+        zip(day.temperature.hourly, day.temperature.apparentHourly).map {
+            TemperatureSample(time: $0.time, actual: $0.value, apparent: $1.value)
+        }
+    }
+
+    private func nearestTemperatureSample(to date: Date) -> TemperatureSample? {
+        temperatureSamples.min { abs($0.time.timeIntervalSince(date)) < abs($1.time.timeIntervalSince(date)) }
+    }
+
+    private func nearestPrecipitationSample(to date: Date) -> HourlyPrecipitation? {
+        day.precipitation.hourly.min { abs($0.time.timeIntervalSince(date)) < abs($1.time.timeIntervalSince(date)) }
+    }
+
+    private func nearestAuroraSample(to date: Date, in aurora: AuroraForecast) -> HourlyAurora? {
+        aurora.hourly.min { abs($0.time.timeIntervalSince(date)) < abs($1.time.timeIntervalSince(date)) }
+    }
+
     private func conditionIconInterval(forPlotWidth width: CGFloat) -> Int {
         let hourCount = day.condition.hourly.count
         guard hourCount > 0 else { return 6 }
@@ -118,6 +140,20 @@ struct DayDetailView: View {
                         .foregroundStyle(by: .value("Series", point.series))
                         .lineStyle(point.series == "Actual" ? StrokeStyle(lineWidth: 2) : StrokeStyle(lineWidth: 1.5, dash: [4, 3]))
                 }
+                if let selectedTemperatureTime, let sample = nearestTemperatureSample(to: selectedTemperatureTime) {
+                    RuleMark(x: .value("Time", sample.time))
+                        .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
+                        .foregroundStyle(.secondary.opacity(0.4))
+                        .annotation(position: .top, spacing: 4) {
+                            ChartTooltip(
+                                title: sample.time.formatted(.dateTime.hour()),
+                                detail: "\(sample.actual.formattedTemperature) · feels \(sample.apparent.formattedTemperature)"
+                            )
+                        }
+                    PointMark(x: .value("Time", sample.time), y: .value("Temperature", sample.actual))
+                        .foregroundStyle(.orange)
+                        .symbolSize(60)
+                }
             }
             .chartForegroundStyleScale([
                 "Actual": Color.orange,
@@ -130,6 +166,7 @@ struct DayDetailView: View {
                     AxisValueLabel(format: .dateTime.hour())
                 }
             }
+            .chartXSelection(value: $selectedTemperatureTime)
             .chartOverlay { proxy in
                 GeometryReader { geometry in
                     let plotFrame = geometry[proxy.plotFrame!]
@@ -156,9 +193,22 @@ struct DayDetailView: View {
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
-            Chart(day.precipitation.hourly) { point in
-                BarMark(x: .value("Time", point.time), y: .value("Probability", point.probability))
-                    .foregroundStyle(.blue)
+            Chart {
+                ForEach(day.precipitation.hourly) { point in
+                    BarMark(x: .value("Time", point.time), y: .value("Probability", point.probability))
+                        .foregroundStyle(.blue)
+                }
+                if let selectedPrecipitationTime, let sample = nearestPrecipitationSample(to: selectedPrecipitationTime) {
+                    RuleMark(x: .value("Time", sample.time))
+                        .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
+                        .foregroundStyle(.secondary.opacity(0.4))
+                        .annotation(position: .top, spacing: 4) {
+                            ChartTooltip(
+                                title: sample.time.formatted(.dateTime.hour()),
+                                detail: "\(Int(sample.probability * 100))% · \(sample.amountMm.formatted(.number.precision(.fractionLength(1)))) mm"
+                            )
+                        }
+                }
             }
             .chartXAxis {
                 AxisMarks(values: .stride(by: .hour, count: 4)) { _ in
@@ -166,6 +216,7 @@ struct DayDetailView: View {
                 }
             }
             .chartYScale(domain: 0...1)
+            .chartXSelection(value: $selectedPrecipitationTime)
             .frame(height: 120)
         }
     }
@@ -190,9 +241,22 @@ struct DayDetailView: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
             if aurora.maxProbabilityPct > 0 {
-                Chart(aurora.hourly) { point in
-                    BarMark(x: .value("Time", point.time), y: .value("Probability", point.probabilityPct))
-                        .foregroundStyle(.purple)
+                Chart {
+                    ForEach(aurora.hourly) { point in
+                        BarMark(x: .value("Time", point.time), y: .value("Probability", point.probabilityPct))
+                            .foregroundStyle(.purple)
+                    }
+                    if let selectedAuroraTime, let sample = nearestAuroraSample(to: selectedAuroraTime, in: aurora) {
+                        RuleMark(x: .value("Time", sample.time))
+                            .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
+                            .foregroundStyle(.secondary.opacity(0.4))
+                            .annotation(position: .top, spacing: 4) {
+                                ChartTooltip(
+                                    title: sample.time.formatted(.dateTime.hour()),
+                                    detail: "\(Int(sample.probabilityPct))% · Kp \(sample.kp.formatted(.number.precision(.fractionLength(1))))"
+                                )
+                            }
+                    }
                 }
                 .chartXAxis {
                     AxisMarks(values: .stride(by: .hour, count: 4)) { _ in
@@ -200,6 +264,7 @@ struct DayDetailView: View {
                     }
                 }
                 .chartYScale(domain: 0...100)
+                .chartXSelection(value: $selectedAuroraTime)
                 .frame(height: 100)
             }
         }
@@ -212,6 +277,45 @@ private struct TemperatureSeriesPoint: Identifiable {
     let series: String
 
     var id: String { "\(series)-\(time.timeIntervalSince1970)" }
+}
+
+private struct TemperatureSample {
+    let time: Date
+    let actual: Double
+    let apparent: Double
+}
+
+/// A chart scrubbing tooltip with its own explicit light/dark colors.
+/// `.thinMaterial` doesn't reliably pick up `preferredColorScheme` overrides
+/// inside a chart annotation, so this reads `colorScheme` directly instead.
+private struct ChartTooltip: View {
+    @Environment(\.colorScheme) private var colorScheme
+
+    let title: String
+    let detail: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+                .font(.caption2.bold())
+                .foregroundStyle(textColor)
+            Text(detail)
+                .font(.caption2)
+                .foregroundStyle(textColor.opacity(0.7))
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(backgroundColor, in: RoundedRectangle(cornerRadius: 6))
+        .fixedSize()
+    }
+
+    private var textColor: Color {
+        colorScheme == .dark ? .white : .black
+    }
+
+    private var backgroundColor: Color {
+        colorScheme == .dark ? Color(white: 0.22) : Color(white: 0.94)
+    }
 }
 
 private struct SummaryStat: View {

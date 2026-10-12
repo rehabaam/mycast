@@ -9,4 +9,10 @@
 MYCAST_API_BASE_URL = http:/$()/localhost:8080
 MYCAST_API_TOKEN =
 
+// The weather station's fixed location, used to center the map (instead of
+// the device's own GPS position, which has nothing to do with where the
+// station actually is). Set in Secrets.xcconfig, which is not committed.
+MYCAST_STATION_LAT =
+MYCAST_STATION_LON =
+
 #include? "Secrets.xcconfig"

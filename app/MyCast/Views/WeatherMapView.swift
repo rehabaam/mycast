@@ -11,51 +11,49 @@ import MapKit
 struct WeatherMapView: View {
     let current: CurrentWeather?
 
-    @State private var locationManager = LocationManager()
-    @State private var cameraPosition: MapCameraPosition = .automatic
-    @State private var hasCenteredOnLocation = false
+    /// Info.plist keys for the station's fixed coordinate (Config/MyCast.xcconfig,
+    /// with the real values in the git-ignored Config/Secrets.xcconfig).
+    static let stationLatitudeInfoKey = "MyCastStationLatitude"
+    static let stationLongitudeInfoKey = "MyCastStationLongitude"
+
+    /// The weather station's own location, not the device's. The station is
+    /// fixed in place, so there is nothing to track live.
+    private let coordinate: CLLocationCoordinate2D
+    @State private var cameraPosition: MapCameraPosition
+
+    init(current: CurrentWeather?, bundle: Bundle = .main) {
+        self.current = current
+        coordinate = Self.stationCoordinate(bundle: bundle)
+        _cameraPosition = State(
+            initialValue: .region(
+                MKCoordinateRegion(
+                    center: coordinate,
+                    span: MKCoordinateSpan(latitudeDelta: 0.05, longitudeDelta: 0.05)
+                )
+            )
+        )
+    }
+
+    static func stationCoordinate(bundle: Bundle = .main) -> CLLocationCoordinate2D {
+        guard
+            let latString = bundle.object(forInfoDictionaryKey: stationLatitudeInfoKey) as? String,
+            let lonString = bundle.object(forInfoDictionaryKey: stationLongitudeInfoKey) as? String,
+            let lat = Double(latString), let lon = Double(lonString)
+        else {
+            return CLLocationCoordinate2D(latitude: 0, longitude: 0)
+        }
+        return CLLocationCoordinate2D(latitude: lat, longitude: lon)
+    }
 
     var body: some View {
-        Group {
-            if let coordinate = locationManager.coordinate {
-                Map(position: $cameraPosition) {
-                    Annotation("Current Conditions", coordinate: coordinate) {
-                        if let current {
-                            WeatherPointAnnotation(current: current)
-                        }
-                    }
+        Map(position: $cameraPosition) {
+            Annotation("Current Conditions", coordinate: coordinate) {
+                if let current {
+                    WeatherPointAnnotation(current: current)
                 }
-                .mapStyle(.standard)
-                .onAppear {
-                    guard !hasCenteredOnLocation else { return }
-                    hasCenteredOnLocation = true
-                    cameraPosition = .region(
-                        MKCoordinateRegion(
-                            center: coordinate,
-                            span: MKCoordinateSpan(latitudeDelta: 0.05, longitudeDelta: 0.05)
-                        )
-                    )
-                }
-            } else if locationManager.status == .denied {
-                ContentUnavailableView {
-                    Label("Location Unavailable", systemImage: "location.slash")
-                } description: {
-                    Text("Allow location access in Settings to see conditions on the map.")
-                } actions: {
-                    Button("Open Settings") {
-                        if let url = URL(string: UIApplication.openSettingsURLString) {
-                            UIApplication.shared.open(url)
-                        }
-                    }
-                }
-            } else {
-                ProgressView("Finding your location…")
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .task {
-            locationManager.startUpdating()
-        }
+        .mapStyle(.standard)
     }
 }
 

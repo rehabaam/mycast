@@ -9,6 +9,7 @@ import SwiftUI
 
 struct ContentView: View {
     @State private var viewModel = WeatherViewModel()
+    @AppStorage("appColorScheme") private var appColorScheme: AppColorScheme = .system
 
     var body: some View {
         TabView {
@@ -16,17 +17,32 @@ struct ContentView: View {
                 NavigationStack {
                     content
                         .navigationTitle("MyCast")
+                        .toolbar { themeToggleButton }
                 }
             }
             Tab("Map", systemImage: "map") {
                 NavigationStack {
                     WeatherMapView(current: viewModel.current)
                         .navigationTitle("Map")
+                        .toolbar { themeToggleButton }
                 }
             }
         }
         .task {
             await viewModel.loadAll()
+        }
+        .preferredColorScheme(appColorScheme.colorScheme)
+    }
+
+    @ToolbarContentBuilder
+    private var themeToggleButton: some ToolbarContent {
+        ToolbarItem(placement: .topBarTrailing) {
+            Button {
+                appColorScheme = appColorScheme.next
+            } label: {
+                Image(systemName: appColorScheme.symbolName)
+            }
+            .accessibilityLabel(appColorScheme.accessibilityLabel)
         }
     }
 
@@ -111,6 +127,42 @@ struct ContentView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+        }
+    }
+}
+
+private enum AppColorScheme: String {
+    case system, light, dark
+
+    var colorScheme: ColorScheme? {
+        switch self {
+        case .system: nil
+        case .light: .light
+        case .dark: .dark
+        }
+    }
+
+    var symbolName: String {
+        switch self {
+        case .system: "circle.lefthalf.filled"
+        case .light: "sun.max.fill"
+        case .dark: "moon.fill"
+        }
+    }
+
+    var accessibilityLabel: String {
+        switch self {
+        case .system: "Appearance: System. Tap to switch to Light."
+        case .light: "Appearance: Light. Tap to switch to Dark."
+        case .dark: "Appearance: Dark. Tap to switch to System."
+        }
+    }
+
+    var next: AppColorScheme {
+        switch self {
+        case .system: .light
+        case .light: .dark
+        case .dark: .system
         }
     }
 }
